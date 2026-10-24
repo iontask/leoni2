@@ -1,0 +1,6 @@
+{
+  "name": "LEONI QualiTrack",
+  "description": "Plateforme industrielle d'administration et de suivi du parcours d'intégration et qualification des opérateurs de câblage automobile (LEONI Maroc).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
