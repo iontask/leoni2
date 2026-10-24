@@ -489,14 +489,17 @@ export default function App() {
         />
       )}
 
-      {/* Corps principal : Sidebar + Module actif */}
-      <div className="flex-1 max-w-7xl w-full mx-auto flex flex-col lg:flex-row">
+      {/* Corps principal : Sidebar Dynamique + Module actif */}
+      <div className="flex-1 max-w-[1680px] w-full mx-auto flex flex-col lg:flex-row">
         {currentUser && (
           <Sidebar
             currentModule={activeModule}
             onSelectModule={(m) => setActiveModule(m)}
             userRole={currentUser.role}
             lang={lang}
+            recruits={allRecruits}
+            auditLogs={auditLogs}
+            currentSiteName={currentSite?.nom}
           />
         )}
 

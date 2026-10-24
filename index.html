@@ -3,6 +3,55 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Compatibilité pour l'extension de frame / sandbox : autoriser l'écriture sur window.fetch
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          var customFetch = originalFetch ? originalFetch.bind(window) : null;
+          Object.defineProperty(window, 'fetch', {
+            configurable: true,
+            enumerable: true,
+            get: function() {
+              return customFetch || (originalFetch ? originalFetch.bind(window) : undefined);
+            },
+            set: function(fn) {
+              customFetch = fn;
+            }
+          });
+
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            try {
+              var protoDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+              if (protoDesc && !protoDesc.set && protoDesc.configurable) {
+                Object.defineProperty(Window.prototype, 'fetch', {
+                  configurable: true,
+                  enumerable: true,
+                  get: function() {
+                    return customFetch || (originalFetch ? originalFetch.bind(this) : undefined);
+                  },
+                  set: function(fn) {
+                    customFetch = fn;
+                  }
+                });
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+
+        // Filtrer les erreurs non gérées provenant d'extensions de navigateur
+        window.addEventListener('error', function(event) {
+          if (
+            (event.filename && event.filename.includes('chrome-extension://')) ||
+            (event.message && event.message.includes('Cannot set property fetch'))
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
     <title>LEONI QualiTrack - Parcours Intégration & Qualification</title>
     <meta name="description" content="Plateforme industrielle d'administration et de suivi du parcours d'intégration et qualification des opérateurs de câblage automobile (LEONI Maroc)." />
     <meta property="og:title" content="LEONI QualiTrack - Parcours Intégration & Qualification" />
