@@ -14,7 +14,10 @@ import {
   StationTypology,
   SystemParameter,
   UserProfile,
-  Workstation
+  Workstation,
+  PokaYokeRuleResult,
+  DocumentRequirement,
+  MatchingResult
 } from './types';
 import { repositoryInstance } from './repositories/storageRepository';
 import { PaginatedResult } from './repositories/types';
@@ -35,8 +38,8 @@ import { TabletRecruitForm } from './components/common/TabletRecruitForm';
 import { MatchingReviewModal } from './components/common/MatchingReviewModal';
 import { SAPLiaisonModal } from './components/common/SAPLiaisonModal';
 import { PokaYokeEngine } from './engine/pokaYoke';
-import { PokaYokeRuleResult, DocumentRequirement, MatchingResult } from './types';
 import { TRANSLATIONS } from './i18n/translations';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 export default function App() {
   const [lang, setLang] = useState<Language>('fr');
@@ -138,34 +141,44 @@ export default function App() {
   };
 
   const loadRecruits = async () => {
-    const result = await repositoryInstance.getAll({
-      page: currentPage,
-      pageSize,
-      search: searchQuery,
-      siteId: currentSiteId,
-      statut: selectedStatus
-    });
-    setPaginatedRecruits(result);
-
-    // Charge également l'ensemble non paginé du site pour le moteur de calculs des indicateurs
-    const fullResult = await repositoryInstance.getAll({
-      page: 1,
-      pageSize: 1000,
-      siteId: currentSiteId
-    });
-    setAllRecruits(fullResult.data);
+    try {
+      const [paginated, allForSite] = await Promise.all([
+        repositoryInstance.getAll({
+          page: currentPage,
+          pageSize,
+          search: searchQuery,
+          siteId: currentSiteId,
+          statut: selectedStatus
+        }),
+        repositoryInstance.getAll({
+          page: 1,
+          pageSize: 50000,
+          siteId: currentSiteId
+        })
+      ]);
+      setPaginatedRecruits(paginated);
+      setAllRecruits(allForSite.data);
+    } catch (err) {
+      console.error('[LEONI-UI] Erreur lors du chargement des recrues:', err);
+    }
   };
 
   const refreshAll = async () => {
-    await loadRecruits();
-    const updatedParams = await repositoryInstance.getAllParameters();
-    setParameters(updatedParams);
-    const updatedLogs = await repositoryInstance.getAllAuditLogs();
-    setAuditLogs(updatedLogs);
-    const updatedGroups = await repositoryInstance.getAllGroups();
-    setGroups(updatedGroups);
-    const updatedReqs = await repositoryInstance.getDocumentRequirements(currentSiteId);
-    setRequirements(updatedReqs);
+    try {
+      const [updatedParams, updatedLogs, updatedGroups, updatedReqs] = await Promise.all([
+        repositoryInstance.getAllParameters(),
+        repositoryInstance.getAllAuditLogs(),
+        repositoryInstance.getAllGroups(),
+        repositoryInstance.getDocumentRequirements(currentSiteId)
+      ]);
+      setParameters(updatedParams);
+      setAuditLogs(updatedLogs);
+      setGroups(updatedGroups);
+      setRequirements(updatedReqs);
+      await loadRecruits();
+    } catch (err) {
+      console.error('[LEONI-UI] Erreur lors de l\'actualisation des données:', err);
+    }
   };
 
   // Handlers Étape 2 : Réconciliation SAP
@@ -504,7 +517,8 @@ export default function App() {
         )}
 
         <main className="flex-1 p-3 sm:p-5 lg:p-6 overflow-x-hidden">
-          {currentUser && activeModule === 'DOSSIERS' && (
+          <ErrorBoundary moduleName={`Module ${activeModule}`}>
+            {currentUser && activeModule === 'DOSSIERS' && (
             <RecruitsModule
               paginatedRecruits={paginatedRecruits}
               currentPage={currentPage}
@@ -637,6 +651,7 @@ export default function App() {
               onRefreshParent={refreshAll}
             />
           )}
+          </ErrorBoundary>
         </main>
       </div>
 

@@ -12,7 +12,7 @@
  * 8. Banc d'essai automatique vérifiant les 3 cas d'école du canevas Excel LEONI.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Layers,
   Calendar,
@@ -69,23 +69,32 @@ export const WorkstationFollowupModule: React.FC<WorkstationFollowupModuleProps>
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [isBenchmarkModalOpen, setIsBenchmarkModalOpen] = useState(false);
 
-  // Recrues en apprentissage au poste ou en prolongation
-  const workstationRecruits = recruits.filter(
-    (r) =>
-      r.statut === 'EN_APPRENTISSAGE_POSTE' ||
-      r.statut === 'NON_QUALIFIE_PROLONGATION' ||
-      (r.statut === 'QUALIFIE_AUTONOME' && (r.joursSuiviCompletes || 0) >= 28)
+  // Recrues en apprentissage au poste ou en prolongation (mémoïsé pour éviter les re-renders infinis)
+  const workstationRecruits = useMemo(() => {
+    return recruits.filter(
+      (r) =>
+        r.statut === 'EN_APPRENTISSAGE_POSTE' ||
+        r.statut === 'NON_QUALIFIE_PROLONGATION' ||
+        (r.statut === 'QUALIFIE_AUTONOME' && (r.joursSuiviCompletes || 0) >= 28)
+    );
+  }, [recruits]);
+
+  const recruitIdsKey = useMemo(
+    () => workstationRecruits.map((r) => r.id).join(','),
+    [workstationRecruits]
   );
 
   // Sélection de la première recrue par défaut
   useEffect(() => {
-    if (workstationRecruits.length > 0 && !selectedRecruitId) {
-      const defaultRecruit =
-        workstationRecruits.find((r) => r.statut === 'EN_APPRENTISSAGE_POSTE') ||
-        workstationRecruits[0];
-      setSelectedRecruitId(defaultRecruit.id);
+    if (workstationRecruits.length > 0) {
+      if (!selectedRecruitId || !workstationRecruits.some((r) => r.id === selectedRecruitId)) {
+        const defaultRecruit =
+          workstationRecruits.find((r) => r.statut === 'EN_APPRENTISSAGE_POSTE') ||
+          workstationRecruits[0];
+        setSelectedRecruitId(defaultRecruit.id);
+      }
     }
-  }, [workstationRecruits, selectedRecruitId]);
+  }, [recruitIdsKey, selectedRecruitId]);
 
   // Chargement de la fiche active
   useEffect(() => {
@@ -94,10 +103,30 @@ export const WorkstationFollowupModule: React.FC<WorkstationFollowupModuleProps>
     }
   }, [selectedRecruitId]);
 
-  // Pré-chargement des fiches pour la vue formateur
+  // Pré-chargement des fiches pour la vue formateur (stabilisé sur recruitIdsKey)
   useEffect(() => {
-    loadAllSheets();
-  }, [workstationRecruits]);
+    let isCancelled = false;
+    async function fetchSheets() {
+      const map: Record<string, CarreMagiqueSheet> = {};
+      for (const rec of workstationRecruits) {
+        try {
+          const s = await repositoryInstance.getCarreMagiqueSheet(rec.id);
+          map[rec.id] = s;
+        } catch {
+          // continue
+        }
+      }
+      if (!isCancelled) {
+        setSheetsByRecruitId(map);
+      }
+    }
+    if (workstationRecruits.length > 0) {
+      fetchSheets();
+    }
+    return () => {
+      isCancelled = true;
+    };
+  }, [recruitIdsKey]);
 
   const loadSheet = async (recruitId: string) => {
     setIsLoadingSheet(true);

@@ -581,7 +581,7 @@ export class MetricsEngine {
   /**
    * Helper pour extraire les valeurs clés à partir de la liste des paramètres système
    */
-  public static extractParametersMap(parameters: SystemParameter[]): {
+  public static extractParametersMap(parameters?: SystemParameter[]): {
     dureeEcoleJours: number;
     dureePosteJours: number;
     seuilReussiteEcole: number;
@@ -589,8 +589,9 @@ export class MetricsEngine {
     pointsTotalCarreMagique: number;
     seuilAQLPourcent: number;
   } {
+    const list = Array.isArray(parameters) ? parameters : [];
     const findVal = (cle: string, defVal: number) => {
-      const p = parameters.find((x) => x.cle === cle);
+      const p = list.find((x) => x.cle === cle);
       return p ? Number(p.valeur) : defVal;
     };
 
@@ -617,24 +618,27 @@ export class MetricsEngine {
       pointsTotalCarreMagique: number;
     }
   ): CalculatedRecruitMetrics {
-    const dureeTotale = params.dureeEcoleJours + params.dureePosteJours;
-    const joursEcoleClamped = Math.min(params.dureeEcoleJours, Math.max(0, recruit.ecoleJoursValides || 0));
-    const progressionEcole = Math.round((joursEcoleClamped / params.dureeEcoleJours) * 100);
+    const dEcole = params.dureeEcoleJours || 5;
+    const dPoste = params.dureePosteJours || 28;
+    const dureeTotale = dEcole + dPoste;
+    const joursEcoleClamped = Math.min(dEcole, Math.max(0, recruit.ecoleJoursValides || 0));
+    const progressionEcole = dEcole > 0 ? Math.round((joursEcoleClamped / dEcole) * 100) : 0;
 
-    const joursPosteClamped = Math.min(params.dureePosteJours, Math.max(0, recruit.joursSuiviCompletes || 0));
-    const progressionPoste = Math.round((joursPosteClamped / params.dureePosteJours) * 100);
+    const joursPosteClamped = Math.min(dPoste, Math.max(0, recruit.joursSuiviCompletes || 0));
+    const progressionPoste = dPoste > 0 ? Math.round((joursPosteClamped / dPoste) * 100) : 0;
 
     const totalJours = joursEcoleClamped + joursPosteClamped;
-    const progressionGlobale = Math.min(100, Math.round((totalJours / dureeTotale) * 100));
+    const progressionGlobale = dureeTotale > 0 ? Math.min(100, Math.round((totalJours / dureeTotale) * 100)) : 0;
 
     const ptsCM = recruit.carreMagiquePointsConformes || 0;
-    const conformiteCM = Math.round((ptsCM / params.pointsTotalCarreMagique) * 100);
+    const totalPtsCM = params.pointsTotalCarreMagique || 16;
+    const conformiteCM = totalPtsCM > 0 ? Math.round((ptsCM / totalPtsCM) * 100) : 0;
 
-    const estEligibleAffectation = recruit.ecoleValidee === true && joursEcoleClamped >= params.dureeEcoleJours;
+    const estEligibleAffectation = recruit.ecoleValidee === true && joursEcoleClamped >= dEcole;
     const estEligibleQualification =
       estEligibleAffectation &&
-      joursPosteClamped >= params.dureePosteJours &&
-      ptsCM >= params.seuilCarreMagique;
+      joursPosteClamped >= dPoste &&
+      ptsCM >= (params.seuilCarreMagique || 14);
 
     return {
       progressionEcolePourcent: progressionEcole,

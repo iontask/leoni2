@@ -559,6 +559,8 @@ export class StorageRepository
 
   public async getByCin(cin: string): Promise<Recruit | null> {
     const cleanCin = cin.trim().toUpperCase();
+    const indexed = this.indexCin.get(cleanCin.toLowerCase());
+    if (indexed) return { ...indexed };
     const item = this.recruits.find((r) => r.cin.toUpperCase() === cleanCin);
     return item ? { ...item } : null;
   }
@@ -786,8 +788,8 @@ export class StorageRepository
         continue;
       }
 
-      // Vérification doublon sur site courant
-      const existing = this.recruits.find((r) => r.cin.toUpperCase() === row.cin.toUpperCase());
+      // Vérification doublon sur site courant en O(1)
+      const existing = this.indexCin.get(row.cin.toLowerCase().trim()) || this.recruits.find((r) => r.cin.toUpperCase() === row.cin.toUpperCase());
       if (existing) {
         errors.push({ ligne: ligneNumber, cin: row.cin, erreur: `Le CIN ${row.cin} existe déjà dans la base (${existing.nom} ${existing.prenom}).` });
         continue;
@@ -799,9 +801,12 @@ export class StorageRepository
         id: newId
       };
       this.recruits.push(toAdd);
+      this.indexCin.set(row.cin.toLowerCase().trim(), toAdd);
+      if (toAdd.matricule) this.indexMatricule.set(toAdd.matricule.toLowerCase().trim(), toAdd);
       count++;
     }
 
+    this.rebuildIndices();
     this.saveRecruits();
 
     // Audit de l'import de masse

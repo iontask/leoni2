@@ -115,6 +115,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Raccourcis clavier (Ctrl+B pour replier, Alt+1..8 pour basculer de module)
   useEffect(() => {
+    const shortcutModules: AppModule[] = [
+      'DOSSIERS',
+      'ECOLE',
+      'AFFECTATION',
+      'SUIVI_POSTE',
+      'QUALIFICATION',
+      'INDICATEURS',
+      'PARAMETRAGE',
+      'AUDIT'
+    ];
+
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ctrl+B ou Cmd+B pour plier/déplier
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
@@ -128,9 +139,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         const num = parseInt(e.key, 10);
         if (num >= 1 && num <= 8) {
           e.preventDefault();
-          const target = allMenuItems[num - 1];
-          if (target) {
-            onSelectModule(target.id);
+          const targetId = shortcutModules[num - 1];
+          if (targetId) {
+            onSelectModule(targetId);
           }
         }
       }
@@ -138,7 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onSelectModule]);
 
   // Définition structurée des modules avec calcul dynamique des métriques
   const allMenuItems: MenuItemDef[] = useMemo(() => [
@@ -312,6 +323,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const workflowItems = filteredItems.filter((i) => i.section === 'WORKFLOW');
   const governanceItems = filteredItems.filter((i) => i.section === 'GOVERNANCE');
 
+  // Pré-calcul mémoïsé des métriques dynamiques pour chaque module
+  const statsByModuleId = useMemo(() => {
+    const map: Record<string, ReturnType<MenuItemDef['getDynamicStats']>> = {};
+    for (const item of allMenuItems) {
+      try {
+        map[item.id] = item.getDynamicStats(recruits, auditLogs, userRole);
+      } catch {
+        map[item.id] = { countText: '', subtext: '' };
+      }
+    }
+    return map;
+  }, [allMenuItems, recruits, auditLogs, userRole]);
+
   return (
     <aside
       className={`shrink-0 bg-white border-b lg:border-b-0 ltr:lg:border-r rtl:lg:border-l border-slate-200 transition-all duration-300 ease-in-out flex flex-col select-none ${
@@ -386,7 +410,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 isCollapsed={isCollapsed}
                 isRtl={isRtl}
                 onSelect={() => onSelectModule(item.id)}
-                stats={item.getDynamicStats(recruits, auditLogs, userRole)}
+                stats={statsByModuleId[item.id] || { countText: '', subtext: '' }}
                 isHovered={hoveredModule === item.id}
                 onHover={(hover) => setHoveredModule(hover ? item.id : null)}
               />
@@ -416,7 +440,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 isCollapsed={isCollapsed}
                 isRtl={isRtl}
                 onSelect={() => onSelectModule(item.id)}
-                stats={item.getDynamicStats(recruits, auditLogs, userRole)}
+                stats={statsByModuleId[item.id] || { countText: '', subtext: '' }}
                 isHovered={hoveredModule === item.id}
                 onHover={(hover) => setHoveredModule(hover ? item.id : null)}
               />
