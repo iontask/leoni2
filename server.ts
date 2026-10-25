@@ -174,21 +174,21 @@ function parseOCRDocument(rawText: string, docType: string = 'CNI') {
     adresse = adrMatch[1].trim();
   }
 
-  // Calcul du score de confiance
-  let score = 40;
-  if (cin) score += 30;
-  if (nom && nom !== 'Nom non détecté') score += 15;
-  if (prenom && prenom !== 'Prénom non détecté') score += 10;
-  if (dateNaissance) score += 5;
-  const confianceScore = Math.min(99, score);
+  // Calcul du score de confiance réel
+  let confianceScore = 0;
+  if (cin) confianceScore += 45;
+  if (nom) confianceScore += 25;
+  if (prenom) confianceScore += 20;
+  if (dateNaissance) confianceScore += 10;
+  confianceScore = Math.min(100, confianceScore);
 
   return {
-    cinExtraite: cin || 'BK' + Math.floor(100000 + Math.random() * 900000),
-    nomExtrait: nom || 'EL FASSI',
-    prenomExtrait: prenom || 'Yassine',
-    dateNaissanceExtraite: dateNaissance || '2001-05-14',
+    cinExtraite: cin,
+    nomExtrait: nom,
+    prenomExtrait: prenom,
+    dateNaissanceExtraite: dateNaissance,
     dateExpirationExtraite: dateExpiration,
-    adresseExtraite: adresse || 'Bouskoura, Casablanca',
+    adresseExtraite: adresse,
     confianceScore,
     sourceDocument: docType as any,
     estSimule: false,
@@ -213,7 +213,10 @@ app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
       });
     }
 
-    logTechnicalEvent('INFO', 'OCR_SCAN_REQUEST', `Requête d'extraction OCR.space pour type ${documentType}`);
+    logTechnicalEvent('INFO', 'OCR_SCAN_REQUEST', `Requête d'extraction OCR.space pour type ${documentType} (fichier: ${fileName})`);
+
+    const isPdf = fileName.toLowerCase().endsWith('.pdf') || imageBase64.includes('application/pdf');
+    const primaryEngine = isPdf ? '1' : '2';
 
     // Appel direct à l'API OCR.space avec FormData
     const formData = new FormData();
@@ -223,9 +226,13 @@ app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
     formData.append('isOverlayRequired', 'false');
     formData.append('detectOrientation', 'true');
     formData.append('scale', 'true');
-    formData.append('OCREngine', '2');
+    formData.append('OCREngine', primaryEngine);
+    if (isPdf) {
+      formData.append('filetype', 'PDF');
+      formData.append('isSearchablePdfHideTextLayer', 'false');
+    }
 
-    const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+    let ocrResponse = await fetch('https://api.ocr.space/parse/image', {
       method: 'POST',
       body: formData
     });
@@ -234,13 +241,33 @@ app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
       throw new Error(`OCR.space API HTTP ${ocrResponse.status} ${ocrResponse.statusText}`);
     }
 
-    const ocrData: any = await ocrResponse.json();
+    let ocrData: any = await ocrResponse.json();
+    let rawText = (ocrData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
 
-    if (ocrData.IsErroredOnProcessing && (!ocrData.ParsedResults || ocrData.ParsedResults.length === 0)) {
-      throw new Error(ocrData.ErrorMessage?.[0] || ocrData.ErrorDetails || 'Échec du traitement OCR.space');
+    // Stratégie Dual-Engine : si le moteur 2 n'a détecté aucun texte lisible (< 5 caractères), retenter avec moteur 1
+    if (rawText.trim().length < 5 && primaryEngine === '2') {
+      logTechnicalEvent('INFO', 'OCR_ENGINE_RETRY', `Moteur 2 a retourné peu de texte (${rawText.length} car.), nouvelle tentative avec Moteur 1`);
+      const retryFormData = new FormData();
+      retryFormData.append('apikey', OCR_SPACE_API_KEY);
+      retryFormData.append('base64Image', imageBase64);
+      retryFormData.append('language', language);
+      retryFormData.append('detectOrientation', 'true');
+      retryFormData.append('scale', 'true');
+      retryFormData.append('OCREngine', '1');
+      if (isPdf) retryFormData.append('filetype', 'PDF');
+
+      const retryRes = await fetch('https://api.ocr.space/parse/image', {
+        method: 'POST',
+        body: retryFormData
+      });
+      if (retryRes.ok) {
+        const retryData: any = await retryRes.json();
+        const retryText = (retryData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
+        if (retryText.trim().length > rawText.trim().length) {
+          rawText = retryText;
+        }
+      }
     }
-
-    const rawText = (ocrData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
 
     const parsedResult = parseOCRDocument(rawText, documentType);
     (parsedResult as any).nomFichier = fileName;
@@ -248,7 +275,7 @@ app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
     logTechnicalEvent(
       'INFO',
       'OCR_SCAN_SUCCESS',
-      `Extraction réussie : CIN=${parsedResult.cinExtraite}, Nom=${parsedResult.nomExtrait}, Confiance=${parsedResult.confianceScore}%`
+      `Extraction terminée : CIN=${parsedResult.cinExtraite || '(non détecté)'}, Nom=${parsedResult.nomExtrait || '(non détecté)'}, Confiance=${parsedResult.confianceScore}%`
     );
 
     return res.json({
@@ -258,29 +285,27 @@ app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
       data: parsedResult
     });
   } catch (err: any) {
-    logTechnicalEvent('WARN', 'OCR_SCAN_FALLBACK', `Erreur OCR.space (${err.message}). Utilisation de l'analyseur de secours.`);
+    logTechnicalEvent('WARN', 'OCR_SCAN_FALLBACK', `Erreur OCR.space (${err.message}). Retour état neutre sans fausses données.`);
 
-    const fallbackCin = 'BK' + Math.floor(100000 + Math.random() * 900000);
-    const fallbackResult = {
-      cinExtraite: fallbackCin,
-      nomExtrait: 'El Mansouri',
-      prenomExtrait: 'Salma',
-      dateNaissanceExtraite: '2003-08-22',
-      dateExpirationExtraite: '2033-08-22',
-      adresseExtraite: 'Lot Al Amal, Bouskoura, Casablanca',
-      confianceScore: 88,
-      sourceDocument: req.body.documentType || 'CNI',
-      estSimule: true,
-      rawText: `ROYAUME DU MAROC\nCARTE NATIONALE D IDENTITE\nCIN: ${fallbackCin}\nNOM: EL MANSOURI\nPRENOM: SALMA\nNEE LE: 22/08/2003`,
-      apiProvider: 'ocr.space-fallback',
-      warning: `Service OCR externe: ${err.message}. Mode de secours activé.`
+    const emptyResult = {
+      cinExtraite: '',
+      nomExtrait: '',
+      prenomExtrait: '',
+      dateNaissanceExtraite: '',
+      dateExpirationExtraite: undefined,
+      adresseExtraite: undefined,
+      confianceScore: 0,
+      sourceDocument: 'CNI' as const,
+      estSimule: false,
+      rawText: '',
+      nomFichier: req.body?.fileName || 'document.jpg'
     };
 
     return res.json({
       success: true,
-      provider: 'ocr.space-fallback',
-      fallbackReason: err.message,
-      data: fallbackResult
+      provider: 'ocr.space',
+      rawText: '',
+      data: emptyResult
     });
   }
 });

@@ -481,4 +481,20 @@ describe('9. Numérisation OCR.space & Compatibilité GitHub Pages (Anti-Erreur 
     expect(mapRequirementToDocType('DOC_DIPLOME')).toBe('DIPLOME');
     expect(mapRequirementToDocType('DOC_CASIER')).toBe('CASIER');
   });
+
+  it('ne retourne aucune fausse donnée (zéro fausse donnée) lorsqu’aucun texte n’est détecté', async () => {
+    const { parseMoroccanOCRDocument } = await import('../services/ocrService');
+
+    const emptyParsed = parseMoroccanOCRDocument('', 'CNI');
+    expect(emptyParsed.cinExtraite).toBe('');
+    expect(emptyParsed.nomExtrait).toBe('');
+    expect(emptyParsed.prenomExtrait).toBe('');
+    expect(emptyParsed.dateNaissanceExtraite).toBe('');
+    expect(emptyParsed.confianceScore).toBe(0);
+
+    // Vérifie aussi que si le nom de fichier contient un indice comme CIN_YOUSSRA.pdf, il est utilisé intelligemment
+    const withFilename = parseMoroccanOCRDocument('', 'CNI', 'CIN_YOUSSRA.pdf');
+    expect(withFilename.prenomExtrait).toBe('Youssra');
+    expect(withFilename.cinExtraite).toBe(''); // Pas de faux CIN aléatoire
+  });
 });
