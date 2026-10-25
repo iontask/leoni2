@@ -90,6 +90,9 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
   const [ocrReviewModal, setOcrReviewModal] = useState<OCRSimulationResult | null>(null);
   const [isScanningOCR, setIsScanningOCR] = useState(false);
   const [isAIPostProcessing, setIsAIPostProcessing] = useState(false);
+  const [isRawTextModalOpen, setIsRawTextModalOpen] = useState(false);
+  const [rawTextToAnalyze, setRawTextToAnalyze] = useState('');
+  const [lastAiPopulatedFields, setLastAiPopulatedFields] = useState<string[] | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [activeScanFileName, setActiveScanFileName] = useState<string>('');
   const [showRawOcrText, setShowRawOcrText] = useState(false);
@@ -166,7 +169,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
     }
   };
 
-  // Numérisation d'un document réel (Photo caméra, PNG, JPG, PDF) via l'API réelle OCR.space
+  // Numérisation d'un document réel (Photo caméra, PNG, JPG, PDF) via l'API réelle OCR.space + Analyse IA
   const handleFileSelectedForOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -177,6 +180,46 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
 
     try {
       const ocrResult = await scanDocumentWithOCR(file, { documentType: 'CNI', language: 'fre' });
+
+      // Peuplement automatique immédiat des champs du formulaire par l'IA
+      const populated: string[] = [];
+      if (ocrResult.cinExtraite) {
+        setCin(ocrResult.cinExtraite);
+        handleCinCheck(ocrResult.cinExtraite);
+        populated.push(`CIN: ${ocrResult.cinExtraite}`);
+      }
+      if (ocrResult.nomExtrait && ocrResult.nomExtrait !== 'Nom non détecté') {
+        setNom(ocrResult.nomExtrait);
+        populated.push(`Nom: ${ocrResult.nomExtrait}`);
+      }
+      if (ocrResult.prenomExtrait && ocrResult.prenomExtrait !== 'Prénom non détecté') {
+        setPrenom(ocrResult.prenomExtrait);
+        populated.push(`Prénom: ${ocrResult.prenomExtrait}`);
+      }
+      if (ocrResult.dateNaissanceExtraite) {
+        setDateNaissance(ocrResult.dateNaissanceExtraite);
+        populated.push(`Date de Naissance: ${ocrResult.dateNaissanceExtraite}`);
+      }
+
+      if (populated.length > 0) {
+        setLastAiPopulatedFields(populated);
+      }
+
+      // Ajout automatique du document CNI numérisé dans la checklist administrative
+      setUploadedDocs((prev) => ({
+        ...prev,
+        DOC_CNI: {
+          id: `doc-cni-${Date.now()}`,
+          codeRequirement: 'DOC_CNI',
+          nomFichier: ocrResult.nomFichier || file.name,
+          typeMime: ocrResult.apercuUrl?.startsWith('data:image') ? 'image/jpeg' : 'application/pdf',
+          tailleKo: Math.round((file.size || 480000) / 1024),
+          dateDepot: new Date().toISOString(),
+          deposeParMatricule: currentUser.matricule,
+          apercuUrl: ocrResult.apercuUrl
+        }
+      }));
+
       setOcrReviewModal(ocrResult);
     } catch (err: any) {
       setOcrError(err.message || 'Échec de la numérisation avec OCR.space.');
@@ -199,11 +242,117 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
         documentType: 'CNI',
         language: 'fre'
       });
+
+      // Peuplement automatique immédiat des champs du formulaire par l'IA
+      const populated: string[] = [];
+      if (ocrResult.cinExtraite) {
+        setCin(ocrResult.cinExtraite);
+        handleCinCheck(ocrResult.cinExtraite);
+        populated.push(`CIN: ${ocrResult.cinExtraite}`);
+      }
+      if (ocrResult.nomExtrait && ocrResult.nomExtrait !== 'Nom non détecté') {
+        setNom(ocrResult.nomExtrait);
+        populated.push(`Nom: ${ocrResult.nomExtrait}`);
+      }
+      if (ocrResult.prenomExtrait && ocrResult.prenomExtrait !== 'Prénom non détecté') {
+        setPrenom(ocrResult.prenomExtrait);
+        populated.push(`Prénom: ${ocrResult.prenomExtrait}`);
+      }
+      if (ocrResult.dateNaissanceExtraite) {
+        setDateNaissance(ocrResult.dateNaissanceExtraite);
+        populated.push(`Date de Naissance: ${ocrResult.dateNaissanceExtraite}`);
+      }
+
+      if (populated.length > 0) {
+        setLastAiPopulatedFields(populated);
+      }
+
+      setUploadedDocs((prev) => ({
+        ...prev,
+        DOC_CNI: {
+          id: `doc-cni-${Date.now()}`,
+          codeRequirement: 'DOC_CNI',
+          nomFichier: 'Echantillon_CNI_Maroc_Test.svg',
+          typeMime: 'image/jpeg',
+          tailleKo: 480,
+          dateDepot: new Date().toISOString(),
+          deposeParMatricule: currentUser.matricule,
+          apercuUrl: sampleB64
+        }
+      }));
+
       setOcrReviewModal(ocrResult);
     } catch (err: any) {
       setOcrError(err.message || 'Échec de la numérisation avec OCR.space.');
     } finally {
       setIsScanningOCR(false);
+    }
+  };
+
+  // Analyse directe d'un texte brut par l'IA Gemini et peuplement automatique des champs
+  const handleAnalyzeRawTextDirectly = async (text: string) => {
+    if (!text.trim()) return;
+    setIsAIPostProcessing(true);
+    setOcrError(null);
+
+    try {
+      const aiCleanse = await cleanseAndValidateWithAI(
+        text,
+        'Saisie_Texte_Brut_OCR.txt',
+        'CNI',
+        { cin, nom, prenom, dateNaissance }
+      );
+
+      const populated: string[] = [];
+      if (aiCleanse.cin) {
+        setCin(aiCleanse.cin);
+        handleCinCheck(aiCleanse.cin);
+        populated.push(`CIN: ${aiCleanse.cin}`);
+      }
+      if (aiCleanse.nom) {
+        setNom(aiCleanse.nom);
+        populated.push(`Nom: ${aiCleanse.nom}`);
+      }
+      if (aiCleanse.prenom) {
+        setPrenom(aiCleanse.prenom);
+        populated.push(`Prénom: ${aiCleanse.prenom}`);
+      }
+      if (aiCleanse.dateNaissance) {
+        setDateNaissance(aiCleanse.dateNaissance);
+        populated.push(`Date de Naissance: ${aiCleanse.dateNaissance}`);
+      }
+
+      setLastAiPopulatedFields(populated);
+
+      // Préparer un résultat d'audit pour la modale
+      const reviewData: OCRSimulationResult = {
+        cinExtraite: aiCleanse.cin,
+        nomExtrait: aiCleanse.nom,
+        prenomExtrait: aiCleanse.prenom,
+        dateNaissanceExtraite: aiCleanse.dateNaissance,
+        dateExpirationExtraite: aiCleanse.dateExpiration,
+        adresseExtraite: aiCleanse.adresse,
+        confianceScore: aiCleanse.confianceGlobale,
+        sourceDocument: 'CNI',
+        estSimule: false,
+        rawText: text,
+        nomFichier: 'Texte_Brut_OCR.txt',
+        aiValidation: {
+          analyseEffectuee: true,
+          estConformeAgeLegal: aiCleanse.estConformeAgeLegal,
+          correctionsApportees: aiCleanse.correctionsApportees,
+          remarqueSynthese: aiCleanse.remarqueSynthese,
+          modeleUtilise: aiCleanse.modeleUtilise,
+          confianceIA: aiCleanse.confianceGlobale
+        }
+      };
+
+      setIsRawTextModalOpen(false);
+      setOcrReviewModal(reviewData);
+    } catch (err: any) {
+      setOcrError(err.message || "Échec de l'analyse IA du texte brut.");
+    } finally {
+      setIsAIPostProcessing(false);
     }
   };
 
@@ -558,6 +707,20 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                         <Sparkles className="w-4 h-4 text-amber-600" />
                         <span>Échantillon Test</span>
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRawTextToAnalyze('');
+                          setIsRawTextModalOpen(true);
+                        }}
+                        disabled={isScanningOCR || isAIPostProcessing}
+                        className="min-h-[44px] px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 font-semibold text-xs border border-indigo-300 flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                        title="Coller ou tester directement du texte brut extrait par OCR pour que l'IA peuple les champs"
+                      >
+                        <Sparkles className="w-4 h-4 text-indigo-600" />
+                        <span>Analyser Texte Brut (IA)</span>
+                      </button>
                     </div>
                   </div>
 
@@ -588,6 +751,28 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                       </button>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Notification dynamique : Champs peuplés par l'IA Gemini */}
+              {lastAiPopulatedFields && lastAiPopulatedFields.length > 0 && (
+                <div className="p-3 bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-300 rounded-xl flex items-center justify-between text-xs text-slate-800 shadow-2xs animate-in fade-in slide-in-from-top-1">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                      <Sparkles className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-extrabold text-emerald-950">Champs peuplés automatiquement par l'IA : </span>
+                      <span className="font-semibold text-emerald-900">{lastAiPopulatedFields.join(' • ')}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLastAiPopulatedFields(null)}
+                    className="text-xs font-bold text-slate-500 hover:text-slate-800 px-2 py-1 rounded-md hover:bg-white/60 cursor-pointer"
+                  >
+                    Fermer
+                  </button>
                 </div>
               )}
 
@@ -1221,6 +1406,84 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           </div>
         );
       })()}
+
+      {/* Modale d'Analyse directe de Texte Brut OCR par l'IA Gemini */}
+      {isRawTextModalOpen && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/70 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-800 animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-indigo-200 bg-indigo-50 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-indigo-700" />
+                <h3 className="font-bold text-sm text-indigo-950">
+                  Analyse IA du Texte Brut OCR & Peuplement Direct
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsRawTextModalOpen(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
+                aria-label="Fermer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <p className="text-slate-600 leading-relaxed">
+                Collez ci-dessous le texte brut issu d'un scan ou d'un flux OCR. L'IA (Gemini 3.8 Flash) va extraire automatiquement le <strong>CIN</strong>, le <strong>Nom</strong>, le <strong>Prénom</strong> et la <strong>Date de naissance</strong>, et peupler directement les champs du formulaire.
+              </p>
+
+              <textarea
+                value={rawTextToAnalyze}
+                onChange={(e) => setRawTextToAnalyze(e.target.value)}
+                placeholder={`Exemple de texte brut OCR :\nROYAUME DU MAROC\nCARTE NATIONALE D'IDENTITE\nNom : BENJELLOUN\nPrénom : Amine\nNé le : 22.08.1999\nN° BK789456\nIDMARBK789456<<<<<<<<<<<<<<<`}
+                rows={7}
+                className="w-full p-3 rounded-xl border border-slate-300 font-mono text-xs bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-hidden leading-relaxed"
+              />
+
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRawTextToAnalyze(
+                      `ROYAUME DU MAROC\nCARTE NATIONALE D'IDENTITE\nNom : CHRAIBI\nPrénom : Youssra\nNée le : 14.05.2001\nN° BK654021\nValable jusqu'au : 20.08.2031\nIDMARBK654021<<<<<<<<<<<<<<<\n0105140F3108204MAR<<<<<<<<<<<4\nCHRAIBI<<YOUSSRA<<<<<<<<<<<<<<`
+                    );
+                  }}
+                  className="text-[11px] text-indigo-600 hover:underline font-bold cursor-pointer"
+                >
+                  Insérer exemple de texte brut CNI
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsRawTextModalOpen(false)}
+                    className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold cursor-pointer"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!rawTextToAnalyze.trim() || isAIPostProcessing}
+                    onClick={() => handleAnalyzeRawTextDirectly(rawTextToAnalyze)}
+                    className="min-h-[44px] px-5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                  >
+                    {isAIPostProcessing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-4 h-4" />
+                    )}
+                    <span>{isAIPostProcessing ? 'Analyse...' : 'Analyser & Peupler avec l\'IA'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

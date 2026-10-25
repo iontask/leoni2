@@ -198,134 +198,6 @@ function parseOCRDocument(rawText: string, docType: string = 'CNI') {
 }
 
 /**
- * Endpoint POST /api/ocr/scan-document
- * Proxy sécurisé vers l'API réelle OCR.space avec extraction automatique des champs
- */
-app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
-  try {
-    const { imageBase64, documentType = 'CNI', language = 'fre', fileName = 'document.jpg' } = req.body;
-
-    if (!imageBase64) {
-      return res.status(400).json({
-        success: false,
-        error: 'Aucun document ou image fourni en base64.',
-        code: 'ERR_MISSING_IMAGE'
-      });
-    }
-
-    logTechnicalEvent('INFO', 'OCR_SCAN_REQUEST', `Requête d'extraction OCR.space pour type ${documentType} (fichier: ${fileName})`);
-
-    const isPdf = fileName.toLowerCase().endsWith('.pdf') || imageBase64.includes('application/pdf');
-    const primaryEngine = isPdf ? '1' : '2';
-
-    // Appel direct à l'API OCR.space avec FormData
-    const formData = new FormData();
-    formData.append('apikey', OCR_SPACE_API_KEY);
-    formData.append('base64Image', imageBase64);
-    formData.append('language', language);
-    formData.append('isOverlayRequired', 'false');
-    formData.append('detectOrientation', 'true');
-    formData.append('scale', 'true');
-    formData.append('OCREngine', primaryEngine);
-    if (isPdf) {
-      formData.append('filetype', 'PDF');
-      formData.append('isSearchablePdfHideTextLayer', 'false');
-    }
-
-    let ocrResponse = await fetch('https://api.ocr.space/parse/image', {
-      method: 'POST',
-      body: formData
-    });
-
-    if (!ocrResponse.ok) {
-      throw new Error(`OCR.space API HTTP ${ocrResponse.status} ${ocrResponse.statusText}`);
-    }
-
-    let ocrData: any = await ocrResponse.json();
-    let rawText = (ocrData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
-
-    // Stratégie Dual-Engine : si le moteur 2 n'a détecté aucun texte lisible (< 5 caractères), retenter avec moteur 1
-    if (rawText.trim().length < 5 && primaryEngine === '2') {
-      logTechnicalEvent('INFO', 'OCR_ENGINE_RETRY', `Moteur 2 a retourné peu de texte (${rawText.length} car.), nouvelle tentative avec Moteur 1`);
-      const retryFormData = new FormData();
-      retryFormData.append('apikey', OCR_SPACE_API_KEY);
-      retryFormData.append('base64Image', imageBase64);
-      retryFormData.append('language', language);
-      retryFormData.append('detectOrientation', 'true');
-      retryFormData.append('scale', 'true');
-      retryFormData.append('OCREngine', '1');
-      if (isPdf) retryFormData.append('filetype', 'PDF');
-
-      const retryRes = await fetch('https://api.ocr.space/parse/image', {
-        method: 'POST',
-        body: retryFormData
-      });
-      if (retryRes.ok) {
-        const retryData: any = await retryRes.json();
-        const retryText = (retryData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
-        if (retryText.trim().length > rawText.trim().length) {
-          rawText = retryText;
-        }
-      }
-    }
-
-    const parsedResult = parseOCRDocument(rawText, documentType);
-    (parsedResult as any).nomFichier = fileName;
-
-    logTechnicalEvent(
-      'INFO',
-      'OCR_SCAN_SUCCESS',
-      `Extraction terminée : CIN=${parsedResult.cinExtraite || '(non détecté)'}, Nom=${parsedResult.nomExtrait || '(non détecté)'}, Confiance=${parsedResult.confianceScore}%`
-    );
-
-    return res.json({
-      success: true,
-      provider: 'ocr.space',
-      rawText,
-      data: parsedResult
-    });
-  } catch (err: any) {
-    logTechnicalEvent('WARN', 'OCR_SCAN_FALLBACK', `Erreur OCR.space (${err.message}). Retour état neutre sans fausses données.`);
-
-    const emptyResult = {
-      cinExtraite: '',
-      nomExtrait: '',
-      prenomExtrait: '',
-      dateNaissanceExtraite: '',
-      dateExpirationExtraite: undefined,
-      adresseExtraite: undefined,
-      confianceScore: 0,
-      sourceDocument: 'CNI' as const,
-      estSimule: false,
-      rawText: '',
-      nomFichier: req.body?.fileName || 'document.jpg'
-    };
-
-    return res.json({
-      success: true,
-      provider: 'ocr.space',
-      rawText: '',
-      data: emptyResult
-    });
-  }
-});
-
-/**
- * Endpoint GET /api/ocr/status
- * Vérification de la disponibilité et de la configuration OCR.space
- */
-app.get('/api/ocr/status', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    service: 'OCR.space Document Scanner',
-    apiKeyConfigured: !!OCR_SPACE_API_KEY,
-    keyMasked: OCR_SPACE_API_KEY ? `${OCR_SPACE_API_KEY.slice(0, 4)}...${OCR_SPACE_API_KEY.slice(-4)}` : null,
-    supportedDocumentTypes: ['CNI', 'DIPLOME', 'CASIER', 'MEDICAL', 'AUTRE'],
-    supportedLanguages: ['fre', 'ara', 'eng']
-  });
-});
-
-/**
  * Nettoyeur heuristique local en secours si Gemini n'est pas configuré
  */
 function heuristicCleanse(rawText: string = '', fileName: string = '', currentFields: any = {}) {
@@ -419,29 +291,38 @@ function heuristicCleanse(rawText: string = '', fileName: string = '', currentFi
 }
 
 /**
- * Route POST /api/ocr/cleanse-fields
- * Phase IA (Gemini 3.8 Flash) pour nettoyer le contenu brut OCR et valider les champs CNI
+ * Analyse le texte brut extrait par l'OCR avec Gemini 3.8 Flash et extrait / peuple automatiquement tous les champs CNI
  */
-app.post('/api/ocr/cleanse-fields', async (req: Request, res: Response) => {
+async function runGeminiFieldAnalysis(
+  rawText: string,
+  fileName: string = '',
+  documentType: string = 'CNI',
+  currentFields: any = {}
+): Promise<{
+  cin: string;
+  nom: string;
+  prenom: string;
+  dateNaissance: string;
+  dateExpiration?: string;
+  adresse?: string;
+  confianceGlobale: number;
+  estConformeAgeLegal: boolean;
+  correctionsApportees: string[];
+  remarqueSynthese: string;
+  modeleUtilise: string;
+}> {
+  if (!ai) {
+    const fallbackClean = heuristicCleanse(rawText, fileName, currentFields);
+    return {
+      modeleUtilise: 'heuristic-cleanser',
+      ...fallbackClean
+    };
+  }
+
   try {
-    const { rawText = '', fileName = '', documentType = 'CNI', currentFields = {} } = req.body;
-
-    logTechnicalEvent('INFO', 'AI_CLEANSE_REQUEST', `Nettoyage et validation IA pour document ${fileName || documentType}`);
-
-    // Si Gemini n'est pas initialisé (ex: pas de clé en environnement de test)
-    if (!ai) {
-      const fallbackClean = heuristicCleanse(rawText, fileName, currentFields);
-      return res.json({
-        success: true,
-        isSimulated: true,
-        modeleUtilise: 'heuristic-cleanser',
-        ...fallbackClean
-      });
-    }
-
     const systemPrompt = `Tu es un assistant IA expert en vérification de documents d'identité marocains (Carte Nationale d'Identité - CNI / CNIE) pour l'usine automobile LEONI Maroc.
 L'utilisateur te fournit le texte brut extrait par OCR (pouvant contenir du bruit, des lettres coupées, du texte arabe et français, ou une zone MRZ au bas du document).
-Ton rôle est d'analyser, nettoyer et valider rigoureusement les informations pour remplir les champs de saisie :
+Ton rôle fondamental est d'analyser ce texte brut, nettoyer les coquilles OCR, et peupler rigoureusement les champs de saisie pour l'opérateur RH :
 1. "cin" : Numéro officiel de la CIN marocaine (1 ou 2 lettres majuscules suivies de 4 à 8 chiffres, ex: BK654321, BJ123456, A123456, CD78901). Corrige les confusions OCR courantes (ex: chiffre 0 pris pour lettre O, tirets superflus). Laisse vide ("") si absent ou illisible.
 2. "nom" : Nom de famille officiel en MAJUSCULES (ex: CHRAIBI, BENANI). Supprime les bruits comme "ROYAUME", "MAROC", "CARTE", "NATIONALE". Laisse vide ("") si non trouvé.
 3. "prenom" : Prénom en Titlecase (ex: Youssra, Amine). Laisse vide ("") si non trouvé.
@@ -506,12 +387,202 @@ ${rawText || '(Aucun texte extrait)'}
     });
 
     const parsed = JSON.parse(response.text || '{}');
+    return {
+      modeleUtilise: 'gemini-3.8-flash',
+      cin: parsed.cin || '',
+      nom: parsed.nom || '',
+      prenom: parsed.prenom || '',
+      dateNaissance: parsed.dateNaissance || '',
+      dateExpiration: parsed.dateExpiration || undefined,
+      adresse: parsed.adresse || undefined,
+      confianceGlobale: typeof parsed.confianceGlobale === 'number' ? parsed.confianceGlobale : 80,
+      estConformeAgeLegal: parsed.estConformeAgeLegal ?? true,
+      correctionsApportees: Array.isArray(parsed.correctionsApportees) ? parsed.correctionsApportees : [],
+      remarqueSynthese: parsed.remarqueSynthese || 'Analyse et peuplement IA effectués.'
+    };
+  } catch (err: any) {
+    logTechnicalEvent('ERROR', 'AI_CLEANSE_ERROR', `Erreur traitement IA: ${err.message}`);
+    const fallbackClean = heuristicCleanse(rawText, fileName, currentFields);
+    return {
+      modeleUtilise: 'heuristic-cleanser',
+      ...fallbackClean
+    };
+  }
+}
+
+/**
+ * Endpoint POST /api/ocr/scan-document
+ * Proxy sécurisé vers l'API réelle OCR.space avec extraction automatique des champs
+ */
+app.post('/api/ocr/scan-document', async (req: Request, res: Response) => {
+  try {
+    const { imageBase64, documentType = 'CNI', language = 'fre', fileName = 'document.jpg' } = req.body;
+
+    if (!imageBase64) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun document ou image fourni en base64.',
+        code: 'ERR_MISSING_IMAGE'
+      });
+    }
+
+    logTechnicalEvent('INFO', 'OCR_SCAN_REQUEST', `Requête d'extraction OCR.space pour type ${documentType} (fichier: ${fileName})`);
+
+    const isPdf = fileName.toLowerCase().endsWith('.pdf') || imageBase64.includes('application/pdf');
+    const primaryEngine = isPdf ? '1' : '2';
+
+    // Appel direct à l'API OCR.space avec FormData
+    const formData = new FormData();
+    formData.append('apikey', OCR_SPACE_API_KEY);
+    formData.append('base64Image', imageBase64);
+    formData.append('language', language);
+    formData.append('isOverlayRequired', 'false');
+    formData.append('detectOrientation', 'true');
+    formData.append('scale', 'true');
+    formData.append('OCREngine', primaryEngine);
+    if (isPdf) {
+      formData.append('filetype', 'PDF');
+      formData.append('isSearchablePdfHideTextLayer', 'false');
+    }
+
+    let ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!ocrResponse.ok) {
+      throw new Error(`OCR.space API HTTP ${ocrResponse.status} ${ocrResponse.statusText}`);
+    }
+
+    let ocrData: any = await ocrResponse.json();
+    let rawText = (ocrData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
+
+    // Stratégie Dual-Engine : si le moteur 2 n'a détecté aucun texte lisible (< 5 caractères), retenter avec moteur 1
+    if (rawText.trim().length < 5 && primaryEngine === '2') {
+      logTechnicalEvent('INFO', 'OCR_ENGINE_RETRY', `Moteur 2 a retourné peu de texte (${rawText.length} car.), nouvelle tentative avec Moteur 1`);
+      const retryFormData = new FormData();
+      retryFormData.append('apikey', OCR_SPACE_API_KEY);
+      retryFormData.append('base64Image', imageBase64);
+      retryFormData.append('language', language);
+      retryFormData.append('detectOrientation', 'true');
+      retryFormData.append('scale', 'true');
+      retryFormData.append('OCREngine', '1');
+      if (isPdf) retryFormData.append('filetype', 'PDF');
+
+      const retryRes = await fetch('https://api.ocr.space/parse/image', {
+        method: 'POST',
+        body: retryFormData
+      });
+      if (retryRes.ok) {
+        const retryData: any = await retryRes.json();
+        const retryText = (retryData.ParsedResults || []).map((r: any) => r.ParsedText || '').join('\n');
+        if (retryText.trim().length > rawText.trim().length) {
+          rawText = retryText;
+        }
+      }
+    }
+
+    const initialParsed = parseOCRDocument(rawText, documentType);
+    let parsedResult: any = {
+      ...initialParsed,
+      nomFichier: fileName,
+      rawText
+    };
+
+    // Analyse IA systématique du texte brut pour peupler et valider les champs
+    if (rawText && rawText.trim().length > 0) {
+      logTechnicalEvent('INFO', 'AI_POPULATE_FIELDS', `Analyse IA du texte brut OCR pour peupler les champs (${rawText.length} car.)`);
+      const aiAnalysis = await runGeminiFieldAnalysis(rawText, fileName, documentType, {
+        cin: initialParsed.cinExtraite,
+        nom: initialParsed.nomExtrait,
+        prenom: initialParsed.prenomExtrait,
+        dateNaissance: initialParsed.dateNaissanceExtraite
+      });
+
+      if (aiAnalysis.cin) parsedResult.cinExtraite = aiAnalysis.cin;
+      if (aiAnalysis.nom) parsedResult.nomExtrait = aiAnalysis.nom;
+      if (aiAnalysis.prenom) parsedResult.prenomExtrait = aiAnalysis.prenom;
+      if (aiAnalysis.dateNaissance) parsedResult.dateNaissanceExtraite = aiAnalysis.dateNaissance;
+      if (aiAnalysis.dateExpiration) parsedResult.dateExpirationExtraite = aiAnalysis.dateExpiration;
+      if (aiAnalysis.adresse) parsedResult.adresseExtraite = aiAnalysis.adresse;
+
+      parsedResult.confianceScore = Math.max(parsedResult.confianceScore, aiAnalysis.confianceGlobale);
+      parsedResult.aiValidation = {
+        analyseEffectuee: true,
+        estConformeAgeLegal: aiAnalysis.estConformeAgeLegal,
+        correctionsApportees: aiAnalysis.correctionsApportees,
+        remarqueSynthese: aiAnalysis.remarqueSynthese,
+        modeleUtilise: aiAnalysis.modeleUtilise,
+        confianceIA: aiAnalysis.confianceGlobale
+      };
+    }
+
+    logTechnicalEvent(
+      'INFO',
+      'OCR_SCAN_SUCCESS',
+      `Extraction et peuplement IA terminés : CIN=${parsedResult.cinExtraite || '(non détecté)'}, Nom=${parsedResult.nomExtrait || '(non détecté)'}, Confiance=${parsedResult.confianceScore}%`
+    );
 
     return res.json({
       success: true,
-      isSimulated: false,
-      modeleUtilise: 'gemini-3.8-flash',
-      ...parsed
+      provider: 'ocr.space',
+      rawText,
+      data: parsedResult
+    });
+  } catch (err: any) {
+    logTechnicalEvent('WARN', 'OCR_SCAN_FALLBACK', `Erreur OCR.space (${err.message}). Retour état neutre sans fausses données.`);
+
+    const emptyResult = {
+      cinExtraite: '',
+      nomExtrait: '',
+      prenomExtrait: '',
+      dateNaissanceExtraite: '',
+      dateExpirationExtraite: undefined,
+      adresseExtraite: undefined,
+      confianceScore: 0,
+      sourceDocument: 'CNI' as const,
+      estSimule: false,
+      rawText: '',
+      nomFichier: req.body?.fileName || 'document.jpg'
+    };
+
+    return res.json({
+      success: true,
+      provider: 'ocr.space',
+      rawText: '',
+      data: emptyResult
+    });
+  }
+});
+
+/**
+ * Endpoint GET /api/ocr/status
+ * Vérification de la disponibilité et de la configuration OCR.space
+ */
+app.get('/api/ocr/status', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'OCR.space Document Scanner',
+    apiKeyConfigured: !!OCR_SPACE_API_KEY,
+    keyMasked: OCR_SPACE_API_KEY ? `${OCR_SPACE_API_KEY.slice(0, 4)}...${OCR_SPACE_API_KEY.slice(-4)}` : null,
+    supportedDocumentTypes: ['CNI', 'DIPLOME', 'CASIER', 'MEDICAL', 'AUTRE'],
+    supportedLanguages: ['fre', 'ara', 'eng']
+  });
+});
+
+/**
+ * Route POST /api/ocr/cleanse-fields
+ * Phase IA (Gemini 3.8 Flash) pour analyser le texte brut OCR et peupler/valider les champs CNI
+ */
+app.post('/api/ocr/cleanse-fields', async (req: Request, res: Response) => {
+  try {
+    const { rawText = '', fileName = '', documentType = 'CNI', currentFields = {} } = req.body;
+    logTechnicalEvent('INFO', 'AI_CLEANSE_REQUEST', `Nettoyage et peuplement IA pour document ${fileName || documentType}`);
+    const aiAnalysis = await runGeminiFieldAnalysis(rawText, fileName, documentType, currentFields);
+    return res.json({
+      success: true,
+      isSimulated: aiAnalysis.modeleUtilise === 'heuristic-cleanser',
+      ...aiAnalysis
     });
   } catch (err: any) {
     logTechnicalEvent('ERROR', 'AI_CLEANSE_ERROR', `Erreur traitement IA: ${err.message}`);
