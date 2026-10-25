@@ -139,6 +139,51 @@ export function convertSvgToPngDataUrl(svgDataUrl: string): Promise<string> {
 }
 
 /**
+ * Normalise toute date issue d'un document ou de l'OCR vers le format standard ISO strict AAAA-MM-JJ (ex: 2001-05-14)
+ * Indispensable pour la compatibilité avec les balises HTML <input type="date">
+ */
+export function normalizeDateToISO(rawDate?: string): string {
+  if (!rawDate) return '';
+  const s = rawDate.trim();
+  if (!s) return '';
+
+  // 1. Déjà au format ISO strict AAAA-MM-JJ
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // 2. Format JJ.MM.AAAA, JJ/MM/AAAA ou JJ-MM-AAAA
+  const dmyMatch = s.match(/(?:^|[^\d])([0-3]?[0-9])[\.\/\-]([0-1]?[0-9])[\.\/\-]([12][90][0-9]{2})(?:[^\d]|$)/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, '0');
+    const month = dmyMatch[2].padStart(2, '0');
+    const year = dmyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  // 3. Format AAAA.MM.JJ ou AAAA/MM/JJ
+  const ymdMatch = s.match(/(?:^|[^\d])([12][90][0-9]{2})[\.\/\-]([0-1]?[0-9])[\.\/\-]([0-3]?[0-9])(?:[^\d]|$)/);
+  if (ymdMatch) {
+    const year = ymdMatch[1];
+    const month = ymdMatch[2].padStart(2, '0');
+    const day = ymdMatch[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  // 4. Format MRZ ICAO 6 chiffres AAMMJJ (ex: 010514 -> 2001-05-14, 310820 -> 2031-08-20)
+  const mrzDateMatch = s.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (mrzDateMatch) {
+    const yy = parseInt(mrzDateMatch[1], 10);
+    const month = mrzDateMatch[2];
+    const day = mrzDateMatch[3];
+    const currentYearShort = new Date().getFullYear() % 100;
+    // Les CNI marocaines et passeports ont une date d'expiration allant jusqu'à +15 ans dans le futur
+    const century = yy <= (currentYearShort + 15) ? '20' : '19';
+    return `${century}${mrzDateMatch[1]}-${month}-${day}`;
+  }
+
+  return s;
+}
+
+/**
  * Analyseur syntaxique certifié CNI marocaine (Zone visuelle + Zone MRZ + Nom de fichier)
  * Ne remplace JAMAIS les champs vides par de fausses données (zéro fausse donnée)
  */
@@ -149,54 +194,110 @@ export function parseMoroccanOCRDocument(
 ): OCRScanResult {
   const cleanText = (rawText || '').trim();
 
-  // 1. Extraction CIN : format marocain 1-2 lettres majuscules + 4-8 chiffres
   let cin = '';
-  const cinMatches = [
-    cleanText.match(/(?:N°|CIN|CARTE|ID|IDENTITE)?\s*([A-Z]{1,2}\s*[0-9]{4,8})\b/i),
-    cleanText.match(/IDMAR\s*([A-Z]{1,2}[0-9]{4,8})/i),
-    cleanText.match(/\b([A-Z]{1,2}[0-9]{4,8})\b/),
-    cleanText.match(/\b([A-Z]{1,2}\s*-\s*[0-9]{4,8})\b/)
-  ];
-  for (const m of cinMatches) {
-    if (m && m[1]) {
-      const candidate = m[1].replace(/[\s-]+/g, '').toUpperCase();
-      if (/^[A-Z]{1,2}[0-9]{4,8}$/.test(candidate)) {
-        cin = candidate;
-        break;
+  let nom = '';
+  let prenom = '';
+  let dateNaissance = '';
+  let dateExpiration: string | undefined = undefined;
+  let adresse: string | undefined = undefined;
+
+  // A. PRIORITÉ ZONE MRZ ICAO (Vérité terrain 100% fiable sur les CNI marocaines)
+  // Ligne 1 MRZ: IDMARBK6540217<<<<<<<<<<<<<<< (CIN 1-2 lettres + 4-6 chiffres + 1 chiffre de contrôle)
+  const mrzCinMatch = cleanText.match(/IDMAR([A-Z]{1,2}[0-9]{4,6})[0-9<]/i) || cleanText.match(/IDMAR([A-Z]{1,2}[0-9]{4,8})/i);
+  if (mrzCinMatch) {
+    cin = mrzCinMatch[1].toUpperCase();
+  }
+
+  // Concordance directe avec le numéro en zone visuelle (ex: N° BK654021)
+  const visualCinMatch = cleanText.match(/(?:N°|N\s*°|CIN)\s*[:\.\s-]*([A-Z]{1,2}\s*[0-9]{4,8})\b/i);
+  if (visualCinMatch) {
+    const vCin = visualCinMatch[1].replace(/[\s-]+/g, '').toUpperCase();
+    if (!cin || cin.startsWith(vCin) || vCin.startsWith(cin)) {
+      cin = vCin;
+    }
+  }
+
+  // Ligne 2 MRZ: 0105140F3108204MAR<<<<<<<<<<<4 (Date Naiss 010514, Date Exp 310820)
+  const mrzDatesMatch = cleanText.match(/(\d{6})\d[MF](\d{6})/);
+  if (mrzDatesMatch) {
+    dateNaissance = normalizeDateToISO(mrzDatesMatch[1]);
+    dateExpiration = normalizeDateToISO(mrzDatesMatch[2]);
+  }
+
+  // Ligne 3 MRZ: CHRAIBI<<YOUSSRA<<<<<<<<<<<<<<
+  const mrzNameMatch = cleanText.match(/(?:^|\n)\s*([A-Z]{2,25})<<([A-Z]{2,25})/);
+  if (mrzNameMatch) {
+    nom = mrzNameMatch[1].toUpperCase();
+    prenom = mrzNameMatch[2].charAt(0).toUpperCase() + mrzNameMatch[2].slice(1).toLowerCase();
+  }
+
+  // B. ANALYSE ZONE VISUELLE CNI MAROCAINE (Gestion de l'inversion des étiquettes arabes)
+  // Sur les CNI marocaines, l'étiquette arabe "النسب" est placée SOUS le nom français
+  // et l'étiquette "الاسم" est placée SOUS le prénom français.
+  const lines = cleanText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Détection de l'étiquette النسب (Nom) : le nom français est sur la ligne précédente (i-1)
+    if (!nom && /^(النسب|Nom\s*النسب|النسب\s*Nom)$/i.test(line) && i > 0) {
+      const prevLine = lines[i - 1];
+      if (/^[A-Za-zÀ-ÖØ-öø-ÿ '-]{2,30}$/.test(prevLine) && !prevLine.includes('ROYAUME') && !prevLine.includes('MAROC')) {
+        nom = prevLine.toUpperCase();
+      }
+    }
+
+    // Détection de l'étiquette الاسم / الإسم (Prénom) : le prénom français est sur la ligne précédente (i-1)
+    if (!prenom && /^(الاسم|الإسم|Prénom\s*الاسم|الاسم\s*Prénom)$/i.test(line) && i > 0) {
+      const prevLine = lines[i - 1];
+      if (/^[A-Za-zÀ-ÖØ-öø-ÿ '-]{2,30}$/.test(prevLine) && !prevLine.includes('CARTE') && !prevLine.includes('NATIONALE')) {
+        prenom = prevLine.charAt(0).toUpperCase() + prevLine.slice(1).toLowerCase();
       }
     }
   }
 
-  // 2. Extraction Nom
-  let nom = '';
-  const nomMatch = cleanText.match(/(?:Nom|NOM|النسب)\s*[:\-\.]?\s*([A-Za-zÀ-ÖØ-öø-ÿ '-]+)/i);
-  if (nomMatch && nomMatch[1].trim()) {
-    nom = nomMatch[1].trim().toUpperCase();
-  }
-
-  // 3. Extraction Prénom
-  let prenom = '';
-  const prenomMatch = cleanText.match(/(?:Pr[eé]nom|PRENOM|الإسم|الاسم)\s*[:\-\.]?\s*([A-Za-zÀ-ÖØ-öø-ÿ '-]+)/i);
-  if (prenomMatch && prenomMatch[1].trim()) {
-    prenom = prenomMatch[1].trim();
-  }
-
-  // 4. Extraction via Zone MRZ marocaine (ex: CHRAIBI<<YOUSSRA<<<<<<<<<<<<<<)
-  if (!nom || !prenom) {
-    const mrzNameMatch = cleanText.match(/(?:^|\n)\s*([A-Z]{2,25})<<([A-Z]{2,25})/);
-    if (mrzNameMatch) {
-      if (!nom) nom = mrzNameMatch[1].toUpperCase();
-      if (!prenom) prenom = mrzNameMatch[2].charAt(0).toUpperCase() + mrzNameMatch[2].slice(1).toLowerCase();
+  // C. EXTRACTION DU CIN EN ZONE VISUELLE SI NON TROUVÉ EN MRZ
+  if (!cin) {
+    const cinMatches = [
+      cleanText.match(/(?:N°|CIN|CARTE|ID|IDENTITE)?\s*([A-Z]{1,2}\s*[0-9]{4,8})\b/i),
+      cleanText.match(/\b([A-Z]{1,2}[0-9]{4,8})\b/),
+      cleanText.match(/\b([A-Z]{1,2}\s*-\s*[0-9]{4,8})\b/)
+    ];
+    for (const m of cinMatches) {
+      if (m && m[1]) {
+        const candidate = m[1].replace(/[\s-]+/g, '').toUpperCase();
+        if (/^[A-Z]{1,2}[0-9]{4,8}$/.test(candidate)) {
+          cin = candidate;
+          break;
+        }
+      }
     }
   }
 
-  // 5. Fallback d'analyse des lignes majuscules (si pas d'étiquette explicite)
+  // D. EXTRACTION CLASSIQUE DU NOM & PRÉNOM (avec préfixe explicite "Nom :", "Prénom :")
+  if (!nom) {
+    const nomMatch = cleanText.match(/(?:Nom\s*:|NOM\s*:)\s*([A-Za-zÀ-ÖØ-öø-ÿ '-]+)/i);
+    if (nomMatch && nomMatch[1].trim()) {
+      nom = nomMatch[1].trim().toUpperCase();
+    }
+  }
+
+  if (!prenom) {
+    const prenomMatch = cleanText.match(/(?:Pr[eé]nom\s*:|PRENOM\s*:)\s*([A-Za-zÀ-ÖØ-öø-ÿ '-]+)/i);
+    if (prenomMatch && prenomMatch[1].trim()) {
+      prenom = prenomMatch[1].trim();
+    }
+  }
+
+  // E. FALLBACK LIGNES MAJUSCULES SI TOUJOURS NON DÉTECTÉ
   if (!nom || !prenom) {
-    const lines = cleanText
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 2 && !l.includes('ROYAUME') && !l.includes('NATIONALE') && !l.includes('MAROC') && !l.includes('IDENTITE'));
-    for (const line of lines) {
+    const candidateLines = lines.filter(
+      (l) => l.length > 2 && !l.includes('ROYAUME') && !l.includes('NATIONALE') && !l.includes('MAROC') && !l.includes('IDENTITE')
+    );
+    for (const line of candidateLines) {
       if (/^[A-ZÀ-ÖØ-öø-ÿ\s'-]{3,35}$/.test(line)) {
         const parts = line.split(/\s+/).filter((p) => p.length >= 2);
         if (!nom && parts[0]) nom = parts[0].toUpperCase();
@@ -205,45 +306,30 @@ export function parseMoroccanOCRDocument(
     }
   }
 
-  // 6. Extraction Date de Naissance
-  let dateNaissance = '';
-  const dateMatch =
-    cleanText.match(
-      /(?:N[eé]\s*(?:\(e\))?\s*le|Date\s*de\s*naissance|N[eé]e?\s*le|ازداد\s*في|تاريخ\s*الازدياد)\s*[:\-\.]?\s*([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-][12][90][0-9]{2})/i
-    ) ||
-    cleanText.match(/\b([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-](?:19[5-9][0-9]|20[0-2][0-9]))\b/);
+  // F. EXTRACTION DATE DE NAISSANCE EN ZONE VISUELLE
+  if (!dateNaissance) {
+    const dateMatch =
+      cleanText.match(
+        /(?:N[eé]\s*(?:\(e\))?\s*le|Date\s*de\s*naissance|N[eé]e?\s*le|ازداد\s*في|تاريخ\s*الازدياد)\s*[:\-\.]?\s*([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-][12][90][0-9]{2})/i
+      ) ||
+      cleanText.match(/\b([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-](?:19[5-9][0-9]|20[0-2][0-9]))\b/);
 
-  if (dateMatch) {
-    const rawDate = dateMatch[1].replace(/[\.\/]/g, '-');
-    const parts = rawDate.split('-');
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        dateNaissance = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-      } else {
-        dateNaissance = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-      }
+    if (dateMatch) {
+      dateNaissance = normalizeDateToISO(dateMatch[1]);
     }
   }
 
-  // 7. Extraction Date d'expiration
-  let dateExpiration: string | undefined = undefined;
-  const expMatch = cleanText.match(
-    /(?:Valable\s*jusqu['’]?au|Expire|Validité|Validite|صالحة\s*إلى)\s*[:\-\.]?\s*([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-][12][0-9]{3})/i
-  );
-  if (expMatch) {
-    const rawExp = expMatch[1].replace(/[\.\/]/g, '-');
-    const parts = rawExp.split('-');
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        dateExpiration = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-      } else {
-        dateExpiration = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-      }
+  // G. EXTRACTION DATE D'EXPIRATION EN ZONE VISUELLE
+  if (!dateExpiration) {
+    const expMatch = cleanText.match(
+      /(?:Valable\s*jusqu['’]?au|Expire|Validité|Validite|صالحة\s*إلى)\s*[:\-\.]?\s*([0-3]?[0-9][\.\/\-][0-1]?[0-9][\.\/\-][12][0-9]{3})/i
+    );
+    if (expMatch) {
+      dateExpiration = normalizeDateToISO(expMatch[1]);
     }
   }
 
-  // 8. Extraction Adresse
-  let adresse: string | undefined = undefined;
+  // H. EXTRACTION ADRESSE
   const adrMatch = cleanText.match(/(?:Adresse|Demeurant\s*[aà]|العنوان)\s*[:\-\.]?\s*([^\r\n]+)/i);
   if (adrMatch && adrMatch[1]) {
     adresse = adrMatch[1].trim();
@@ -411,7 +497,20 @@ export function clientHeuristicCleanse(
     }
   }
 
-  // 4. Contrôle de l'âge légal (≥ 18 ans par rapport à l'année courante 2026)
+  // 4. Normalisation stricte de la date de naissance au format ISO AAAA-MM-JJ (pour compatibilité input HTML5)
+  if (dateNaissance) {
+    const originalDate = dateNaissance;
+    dateNaissance = normalizeDateToISO(dateNaissance);
+    if (dateNaissance !== originalDate) {
+      correctionsApportees.push(`Normalisation ISO date de naissance : "${originalDate}" ➔ "${dateNaissance}"`);
+    }
+  }
+
+  if (dateExpiration) {
+    dateExpiration = normalizeDateToISO(dateExpiration);
+  }
+
+  // 5. Contrôle de l'âge légal (≥ 18 ans par rapport à l'année courante 2026)
   let estConformeAgeLegal = true;
   if (dateNaissance) {
     const birthYear = parseInt(dateNaissance.split('-')[0], 10);
@@ -449,7 +548,7 @@ export function clientHeuristicCleanse(
 }
 
 /**
- * Phase IA (Gemini 3.8 Flash via proxy backend ou Heuristique locale)
+ * Phase IA (Gemini via proxy backend ou Heuristique locale)
  * Nettoie le contenu brut OCR et valide les champs CNI avec conformité IATF 16949
  */
 export async function cleanseAndValidateWithAI(
@@ -491,14 +590,14 @@ export async function cleanseAndValidateWithAI(
       cin: data.cin || '',
       nom: data.nom || '',
       prenom: data.prenom || '',
-      dateNaissance: data.dateNaissance || '',
-      dateExpiration: data.dateExpiration || undefined,
+      dateNaissance: normalizeDateToISO(data.dateNaissance) || '',
+      dateExpiration: normalizeDateToISO(data.dateExpiration) || undefined,
       adresse: data.adresse || undefined,
       confianceGlobale: typeof data.confianceGlobale === 'number' ? data.confianceGlobale : 80,
       estConformeAgeLegal: data.estConformeAgeLegal ?? true,
       correctionsApportees: Array.isArray(data.correctionsApportees) ? data.correctionsApportees : [],
       remarqueSynthese: data.remarqueSynthese || 'Nettoyage et validation IA effectués.',
-      modeleUtilise: data.modeleUtilise || 'Gemini 3.8 Flash'
+      modeleUtilise: data.modeleUtilise || 'Gemini Flash'
     };
   } catch (err) {
     console.warn('[LEONI-OCR-AI] Bascule vers nettoyeur heuristique local:', err);

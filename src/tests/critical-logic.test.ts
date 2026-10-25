@@ -540,4 +540,38 @@ describe('10. Phase IA de Nettoyage & Validation des Champs (Gemini & Heuristiqu
     expect(cleaned.estConformeAgeLegal).toBe(false);
     expect(cleaned.correctionsApportees.some((c) => c.includes('< 18 ans'))).toBe(true);
   });
+
+  it('gère parfaitement la mise en page CNI marocaine avec étiquettes arabes inversées et zone MRZ', async () => {
+    const { parseMoroccanOCRDocument, normalizeDateToISO } = await import('../services/ocrService');
+
+    // Test normalizeDateToISO
+    expect(normalizeDateToISO('14.05.2001')).toBe('2001-05-14');
+    expect(normalizeDateToISO('14/05/2001')).toBe('2001-05-14');
+    expect(normalizeDateToISO('14-05-2001')).toBe('2001-05-14');
+    expect(normalizeDateToISO('2001-05-14')).toBe('2001-05-14');
+    expect(normalizeDateToISO('010514')).toBe('2001-05-14');
+    expect(normalizeDateToISO('310820')).toBe('2031-08-20');
+
+    // Texte OCR réel d'une CNI marocaine (identique à la capture réelle de l'utilisateur)
+    const moroccanCniText = `
+      ROYAUME DU MAROC
+      CARTE NATIONALE D'IDENTITE
+      CHRAIBI
+      النسب
+      YOUSSRA
+      الاسم
+      Née le 14/05/2001
+      N° BK654021
+      IDMARBK6540217<<<<<<<<<<<<<<<
+      0105140F3108204MAR<<<<<<<<<<<4
+      CHRAIBI<<YOUSSRA<<<<<<<<<<<<<<
+    `;
+
+    const parsed = parseMoroccanOCRDocument(moroccanCniText, 'CNI', 'CIN_Scan.jpg');
+    expect(parsed.cinExtraite).toBe('BK654021');
+    expect(parsed.nomExtrait).toBe('CHRAIBI');
+    expect(parsed.prenomExtrait).toBe('Youssra');
+    expect(parsed.dateNaissanceExtraite).toBe('2001-05-14');
+    expect(parsed.dateExpirationExtraite).toBe('2031-08-20');
+  });
 });

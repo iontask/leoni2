@@ -32,7 +32,8 @@ import {
   scanDocumentWithOCR,
   scanBase64WithOCR,
   generateSampleMoroccanCNI,
-  cleanseAndValidateWithAI
+  cleanseAndValidateWithAI,
+  normalizeDateToISO
 } from '../../services/ocrService';
 import {
   DocumentRequirement,
@@ -184,21 +185,27 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
       // Peuplement automatique immédiat des champs du formulaire par l'IA
       const populated: string[] = [];
       if (ocrResult.cinExtraite) {
-        setCin(ocrResult.cinExtraite);
-        handleCinCheck(ocrResult.cinExtraite);
-        populated.push(`CIN: ${ocrResult.cinExtraite}`);
+        const cleanCin = ocrResult.cinExtraite.trim().toUpperCase();
+        setCin(cleanCin);
+        handleCinCheck(cleanCin);
+        populated.push(`CIN: ${cleanCin}`);
       }
       if (ocrResult.nomExtrait && ocrResult.nomExtrait !== 'Nom non détecté') {
-        setNom(ocrResult.nomExtrait);
-        populated.push(`Nom: ${ocrResult.nomExtrait}`);
+        const cleanNom = ocrResult.nomExtrait.trim().toUpperCase();
+        setNom(cleanNom);
+        populated.push(`Nom: ${cleanNom}`);
       }
       if (ocrResult.prenomExtrait && ocrResult.prenomExtrait !== 'Prénom non détecté') {
-        setPrenom(ocrResult.prenomExtrait);
-        populated.push(`Prénom: ${ocrResult.prenomExtrait}`);
+        const cleanPrenom = ocrResult.prenomExtrait.trim();
+        setPrenom(cleanPrenom);
+        populated.push(`Prénom: ${cleanPrenom}`);
       }
       if (ocrResult.dateNaissanceExtraite) {
-        setDateNaissance(ocrResult.dateNaissanceExtraite);
-        populated.push(`Date de Naissance: ${ocrResult.dateNaissanceExtraite}`);
+        const isoDate = normalizeDateToISO(ocrResult.dateNaissanceExtraite);
+        if (isoDate) {
+          setDateNaissance(isoDate);
+          populated.push(`Date de Naissance: ${isoDate}`);
+        }
       }
 
       if (populated.length > 0) {
@@ -246,21 +253,27 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
       // Peuplement automatique immédiat des champs du formulaire par l'IA
       const populated: string[] = [];
       if (ocrResult.cinExtraite) {
-        setCin(ocrResult.cinExtraite);
-        handleCinCheck(ocrResult.cinExtraite);
-        populated.push(`CIN: ${ocrResult.cinExtraite}`);
+        const cleanCin = ocrResult.cinExtraite.trim().toUpperCase();
+        setCin(cleanCin);
+        handleCinCheck(cleanCin);
+        populated.push(`CIN: ${cleanCin}`);
       }
       if (ocrResult.nomExtrait && ocrResult.nomExtrait !== 'Nom non détecté') {
-        setNom(ocrResult.nomExtrait);
-        populated.push(`Nom: ${ocrResult.nomExtrait}`);
+        const cleanNom = ocrResult.nomExtrait.trim().toUpperCase();
+        setNom(cleanNom);
+        populated.push(`Nom: ${cleanNom}`);
       }
       if (ocrResult.prenomExtrait && ocrResult.prenomExtrait !== 'Prénom non détecté') {
-        setPrenom(ocrResult.prenomExtrait);
-        populated.push(`Prénom: ${ocrResult.prenomExtrait}`);
+        const cleanPrenom = ocrResult.prenomExtrait.trim();
+        setPrenom(cleanPrenom);
+        populated.push(`Prénom: ${cleanPrenom}`);
       }
       if (ocrResult.dateNaissanceExtraite) {
-        setDateNaissance(ocrResult.dateNaissanceExtraite);
-        populated.push(`Date de Naissance: ${ocrResult.dateNaissanceExtraite}`);
+        const isoDate = normalizeDateToISO(ocrResult.dateNaissanceExtraite);
+        if (isoDate) {
+          setDateNaissance(isoDate);
+          populated.push(`Date de Naissance: ${isoDate}`);
+        }
       }
 
       if (populated.length > 0) {
@@ -305,21 +318,27 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
 
       const populated: string[] = [];
       if (aiCleanse.cin) {
-        setCin(aiCleanse.cin);
-        handleCinCheck(aiCleanse.cin);
-        populated.push(`CIN: ${aiCleanse.cin}`);
+        const cleanCin = aiCleanse.cin.trim().toUpperCase();
+        setCin(cleanCin);
+        handleCinCheck(cleanCin);
+        populated.push(`CIN: ${cleanCin}`);
       }
       if (aiCleanse.nom) {
-        setNom(aiCleanse.nom);
-        populated.push(`Nom: ${aiCleanse.nom}`);
+        const cleanNom = aiCleanse.nom.trim().toUpperCase();
+        setNom(cleanNom);
+        populated.push(`Nom: ${cleanNom}`);
       }
       if (aiCleanse.prenom) {
-        setPrenom(aiCleanse.prenom);
-        populated.push(`Prénom: ${aiCleanse.prenom}`);
+        const cleanPrenom = aiCleanse.prenom.trim();
+        setPrenom(cleanPrenom);
+        populated.push(`Prénom: ${cleanPrenom}`);
       }
       if (aiCleanse.dateNaissance) {
-        setDateNaissance(aiCleanse.dateNaissance);
-        populated.push(`Date de Naissance: ${aiCleanse.dateNaissance}`);
+        const isoDate = normalizeDateToISO(aiCleanse.dateNaissance);
+        if (isoDate) {
+          setDateNaissance(isoDate);
+          populated.push(`Date de Naissance: ${isoDate}`);
+        }
       }
 
       setLastAiPopulatedFields(populated);
@@ -373,6 +392,36 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
         }
       );
 
+      const isoBirth = normalizeDateToISO(aiCleanse.dateNaissance);
+      const isoExp = normalizeDateToISO(aiCleanse.dateExpiration);
+
+      // Met à jour immédiatement les champs du formulaire avec les corrections apportées par l'IA
+      const rePopulated: string[] = [];
+      if (aiCleanse.cin) {
+        const cleanCin = aiCleanse.cin.trim().toUpperCase();
+        setCin(cleanCin);
+        handleCinCheck(cleanCin);
+        rePopulated.push(`CIN: ${cleanCin}`);
+      }
+      if (aiCleanse.nom) {
+        const cleanNom = aiCleanse.nom.trim().toUpperCase();
+        setNom(cleanNom);
+        rePopulated.push(`Nom: ${cleanNom}`);
+      }
+      if (aiCleanse.prenom) {
+        const cleanPrenom = aiCleanse.prenom.trim();
+        setPrenom(cleanPrenom);
+        rePopulated.push(`Prénom: ${cleanPrenom}`);
+      }
+      if (isoBirth) {
+        setDateNaissance(isoBirth);
+        rePopulated.push(`Date de Naissance: ${isoBirth}`);
+      }
+
+      if (rePopulated.length > 0) {
+        setLastAiPopulatedFields(rePopulated);
+      }
+
       setOcrReviewModal((prev) =>
         prev
           ? {
@@ -380,8 +429,8 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
               cinExtraite: aiCleanse.cin || prev.cinExtraite,
               nomExtrait: aiCleanse.nom || prev.nomExtrait,
               prenomExtrait: aiCleanse.prenom || prev.prenomExtrait,
-              dateNaissanceExtraite: aiCleanse.dateNaissance || prev.dateNaissanceExtraite,
-              dateExpirationExtraite: aiCleanse.dateExpiration || prev.dateExpirationExtraite,
+              dateNaissanceExtraite: isoBirth || prev.dateNaissanceExtraite,
+              dateExpirationExtraite: isoExp || prev.dateExpirationExtraite,
               adresseExtraite: aiCleanse.adresse || prev.adresseExtraite,
               confianceScore: Math.max(prev.confianceScore, aiCleanse.confianceGlobale),
               aiValidation: {
@@ -404,10 +453,34 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
 
   // Validation de l'écran de relecture OCR obligatoire et remplissage automatique des champs
   const handleApplyOCR = (ocr: OCRSimulationResult) => {
-    if (ocr.cinExtraite) setCin(ocr.cinExtraite);
-    if (ocr.nomExtrait && ocr.nomExtrait !== 'Nom non détecté') setNom(ocr.nomExtrait);
-    if (ocr.prenomExtrait && ocr.prenomExtrait !== 'Prénom non détecté') setPrenom(ocr.prenomExtrait);
-    if (ocr.dateNaissanceExtraite) setDateNaissance(ocr.dateNaissanceExtraite);
+    const appliedFields: string[] = [];
+    if (ocr.cinExtraite) {
+      const cleanCin = ocr.cinExtraite.trim().toUpperCase();
+      setCin(cleanCin);
+      handleCinCheck(cleanCin);
+      appliedFields.push(`CIN: ${cleanCin}`);
+    }
+    if (ocr.nomExtrait && ocr.nomExtrait !== 'Nom non détecté') {
+      const cleanNom = ocr.nomExtrait.trim().toUpperCase();
+      setNom(cleanNom);
+      appliedFields.push(`Nom: ${cleanNom}`);
+    }
+    if (ocr.prenomExtrait && ocr.prenomExtrait !== 'Prénom non détecté') {
+      const cleanPrenom = ocr.prenomExtrait.trim();
+      setPrenom(cleanPrenom);
+      appliedFields.push(`Prénom: ${cleanPrenom}`);
+    }
+    if (ocr.dateNaissanceExtraite) {
+      const isoDate = normalizeDateToISO(ocr.dateNaissanceExtraite);
+      if (isoDate) {
+        setDateNaissance(isoDate);
+        appliedFields.push(`Date de Naissance: ${isoDate}`);
+      }
+    }
+
+    if (appliedFields.length > 0) {
+      setLastAiPopulatedFields(appliedFields);
+    }
 
     // Ajout automatique du document CNI numérisé dans la checklist administrative
     setUploadedDocs((prev) => ({
@@ -415,7 +488,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
       DOC_CNI: {
         id: `doc-cni-${Date.now()}`,
         codeRequirement: 'DOC_CNI',
-        nomFichier: ocr.nomFichier || `CNI_${ocr.cinExtraite}_Scanne.jpg`,
+        nomFichier: ocr.nomFichier || `CNI_${ocr.cinExtraite || 'Scan'}.jpg`,
         typeMime: ocr.apercuUrl?.startsWith('data:image') ? 'image/jpeg' : 'application/pdf',
         tailleKo: 480,
         dateDepot: new Date().toISOString(),
@@ -426,9 +499,6 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
       }
     }));
 
-    if (ocr.cinExtraite) {
-      handleCinCheck(ocr.cinExtraite);
-    }
     setOcrReviewModal(null);
   };
 
