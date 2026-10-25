@@ -31,7 +31,8 @@ import {
 import {
   scanDocumentWithOCR,
   scanBase64WithOCR,
-  generateSampleMoroccanCNI
+  generateSampleMoroccanCNI,
+  cleanseAndValidateWithAI
 } from '../../services/ocrService';
 import {
   DocumentRequirement,
@@ -84,10 +85,11 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
   const [telephone, setTelephone] = useState('+212 6');
   const [dateEntree, setDateEntree] = useState(new Date().toISOString().split('T')[0]);
 
-  // Étape 2 : Pièces jointes & OCR (Intégration Réelle OCR.space)
+  // Étape 2 : Pièces jointes & OCR (Intégration Réelle OCR.space + Nettoyage IA Gemini)
   const [uploadedDocs, setUploadedDocs] = useState<Record<string, RecruitDocument>>({});
   const [ocrReviewModal, setOcrReviewModal] = useState<OCRSimulationResult | null>(null);
   const [isScanningOCR, setIsScanningOCR] = useState(false);
+  const [isAIPostProcessing, setIsAIPostProcessing] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [activeScanFileName, setActiveScanFileName] = useState<string>('');
   const [showRawOcrText, setShowRawOcrText] = useState(false);
@@ -184,7 +186,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
     }
   };
 
-  // Numérisation d'un échantillon CNI officiel marocain pour test immédiat d'OCR.space
+  // Numérisation d'un échantillon CNI officiel marocain pour test immédiat d'OCR.space + Nettoyage IA
   const handleScanSampleCNI = async () => {
     setIsScanningOCR(true);
     setOcrError(null);
@@ -202,6 +204,52 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
       setOcrError(err.message || 'Échec de la numérisation avec OCR.space.');
     } finally {
       setIsScanningOCR(false);
+    }
+  };
+
+  // Ré-analyse à la demande par l'IA Gemini pour affiner ou corriger les champs
+  const handleReanalyzeWithAI = async () => {
+    if (!ocrReviewModal) return;
+    setIsAIPostProcessing(true);
+    try {
+      const aiCleanse = await cleanseAndValidateWithAI(
+        ocrReviewModal.rawText || '',
+        ocrReviewModal.nomFichier || activeScanFileName || 'document.jpg',
+        ocrReviewModal.sourceDocument || 'CNI',
+        {
+          cin: ocrReviewModal.cinExtraite,
+          nom: ocrReviewModal.nomExtrait,
+          prenom: ocrReviewModal.prenomExtrait,
+          dateNaissance: ocrReviewModal.dateNaissanceExtraite
+        }
+      );
+
+      setOcrReviewModal((prev) =>
+        prev
+          ? {
+              ...prev,
+              cinExtraite: aiCleanse.cin || prev.cinExtraite,
+              nomExtrait: aiCleanse.nom || prev.nomExtrait,
+              prenomExtrait: aiCleanse.prenom || prev.prenomExtrait,
+              dateNaissanceExtraite: aiCleanse.dateNaissance || prev.dateNaissanceExtraite,
+              dateExpirationExtraite: aiCleanse.dateExpiration || prev.dateExpirationExtraite,
+              adresseExtraite: aiCleanse.adresse || prev.adresseExtraite,
+              confianceScore: Math.max(prev.confianceScore, aiCleanse.confianceGlobale),
+              aiValidation: {
+                analyseEffectuee: true,
+                estConformeAgeLegal: aiCleanse.estConformeAgeLegal,
+                correctionsApportees: aiCleanse.correctionsApportees,
+                remarqueSynthese: aiCleanse.remarqueSynthese,
+                modeleUtilise: aiCleanse.modeleUtilise,
+                confianceIA: aiCleanse.confianceGlobale
+              }
+            }
+          : null
+      );
+    } catch (err: any) {
+      console.warn('[LEONI-OCR-AI] Erreur ré-analyse manuelle:', err);
+    } finally {
+      setIsAIPostProcessing(false);
     }
   };
 
@@ -513,13 +561,13 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                     </div>
                   </div>
 
-                  {/* État de chargement / progression OCR */}
+                  {/* État de chargement / progression OCR + IA */}
                   {isScanningOCR && (
-                    <div className="p-3 bg-blue-100/70 border border-blue-300 rounded-xl flex items-center gap-3 text-xs text-blue-900 animate-pulse">
+                    <div className="p-3 bg-gradient-to-r from-blue-100 to-indigo-100 border border-blue-300 rounded-xl flex items-center gap-3 text-xs text-blue-950 animate-pulse">
                       <Loader2 className="w-4 h-4 animate-spin text-blue-700 shrink-0" />
                       <div>
-                        <span className="font-bold">Analyse OCR.space en cours : </span>
-                        <span>Reconnaissance optique des caractères sur {activeScanFileName || 'le document'} et extraction de la pièce d'identité marocaine...</span>
+                        <span className="font-bold">Numérisation & Phase IA en cours : </span>
+                        <span>Reconnaissance optique sur {activeScanFileName || 'le document'} suivie du nettoyage et validation automatique par IA Gemini...</span>
                       </div>
                     </div>
                   )}
@@ -905,7 +953,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                     >
                       Relecture & Validation des Données
                     </h3>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <span
                         className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${
                           aDetecteTexte
@@ -916,9 +964,15 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                         }`}
                       >
                         {aDetecteTexte
-                          ? `API OCR.space : ${ocrReviewModal.confianceScore}% confiance`
-                          : 'Texte non détecté — Saisie manuelle'}
+                          ? `OCR.space : ${ocrReviewModal.confianceScore}%`
+                          : 'Texte non détecté'}
                       </span>
+                      {ocrReviewModal.aiValidation?.analyseEffectuee && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
+                          <Sparkles className="w-3 h-3 text-indigo-600" />
+                          <span>Nettoyé & Validé IA</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -959,6 +1013,75 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                     </div>
                   </div>
                 )}
+
+                {/* Bloc Phase IA : Nettoyage & Validation */}
+                <div className="p-3.5 bg-gradient-to-br from-indigo-50/80 to-blue-50/50 rounded-xl border border-indigo-200 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-950">
+                      <Sparkles className="w-4 h-4 text-indigo-600" />
+                      <span>Phase IA (Gemini 3.8 Flash) — Nettoyage & Validation</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleReanalyzeWithAI}
+                      disabled={isAIPostProcessing}
+                      className="px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 font-semibold text-[11px] flex items-center gap-1 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                      title="Relancer l'analyse et le nettoyage IA sur les champs"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isAIPostProcessing ? 'animate-spin' : ''}`} />
+                      <span>{isAIPostProcessing ? 'Nettoyage...' : 'Ré-analyser IA'}</span>
+                    </button>
+                  </div>
+
+                  {/* Contrôle Âge Légal */}
+                  {ocrReviewModal.aiValidation?.estConformeAgeLegal !== undefined && (
+                    <div
+                      className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-2 text-xs font-semibold ${
+                        ocrReviewModal.aiValidation.estConformeAgeLegal
+                          ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                          : 'bg-rose-50 border-rose-300 text-rose-900'
+                      }`}
+                    >
+                      {ocrReviewModal.aiValidation.estConformeAgeLegal ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      )}
+                      <span>
+                        {ocrReviewModal.aiValidation.estConformeAgeLegal
+                          ? 'Conformité légale : Opérateur majeur (âge ≥ 18 ans validé)'
+                          : 'Alerte RH : Opérateur mineur ou date incompatible (âge < 18 ans)'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Synthèse IA */}
+                  {ocrReviewModal.aiValidation?.remarqueSynthese && (
+                    <p className="text-[11px] text-slate-700 bg-white/80 p-2 rounded-lg border border-indigo-100 leading-relaxed">
+                      <span className="font-semibold text-indigo-950">Synthèse : </span>
+                      {ocrReviewModal.aiValidation.remarqueSynthese}
+                    </p>
+                  )}
+
+                  {/* Corrections & Normalisations apportées */}
+                  {ocrReviewModal.aiValidation?.correctionsApportees &&
+                    ocrReviewModal.aiValidation.correctionsApportees.length > 0 && (
+                      <div className="pt-1 border-t border-indigo-100">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-800 block mb-1">
+                          Corrections & normalisations automatiques ({ocrReviewModal.aiValidation.correctionsApportees.length}) :
+                        </span>
+                        <ul className="space-y-0.5 text-[11px] text-indigo-900">
+                          {ocrReviewModal.aiValidation.correctionsApportees.map((corr, idx) => (
+                            <li key={idx} className="flex items-center gap-1.5">
+                              <span className="w-1 h-1 rounded-full bg-indigo-500 shrink-0" />
+                              <span>{corr}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                </div>
 
                 {/* Information si le texte n'a pas été détecté */}
                 {!aDetecteTexte && (

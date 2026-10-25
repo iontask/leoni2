@@ -498,3 +498,46 @@ describe('9. Numérisation OCR.space & Compatibilité GitHub Pages (Anti-Erreur 
     expect(withFilename.cinExtraite).toBe(''); // Pas de faux CIN aléatoire
   });
 });
+
+describe('10. Phase IA de Nettoyage & Validation des Champs (Gemini & Heuristique Hybride)', () => {
+  it('nettoie et normalise les confusions OCR sur le CIN et les noms avec traçabilité des corrections', async () => {
+    const { clientHeuristicCleanse } = await import('../services/ocrService');
+
+    // Cas typique : OCR avec bruits, 'O' confondu avec '0' dans le numéro CIN, espaces
+    const noisyRawText = `
+      ROYAUME DU MAROC
+      CARTE NATIONALE D'IDENTITE
+      Nom : ROYAUME CHRAIBI
+      Prénom : youssra
+      Né le : 14.05.2001
+      N° BK 654O21
+    `;
+
+    const cleaned = clientHeuristicCleanse(noisyRawText, 'CIN_YOUSSRA.pdf', 'CNI');
+
+    // Le 'O' dans la partie chiffre doit être converti en 0 et les espaces supprimés
+    expect(cleaned.cin).toBe('BK654021');
+    expect(cleaned.nom).toBe('CHRAIBI');
+    expect(cleaned.prenom).toBe('Youssra');
+    expect(cleaned.dateNaissance).toBe('2001-05-14');
+    expect(cleaned.estConformeAgeLegal).toBe(true);
+    expect(cleaned.correctionsApportees.length).toBeGreaterThan(0);
+    expect(cleaned.confianceGlobale).toBeGreaterThanOrEqual(75);
+  });
+
+  it('détecte et alerte si l’opérateur a moins de 18 ans', async () => {
+    const { clientHeuristicCleanse } = await import('../services/ocrService');
+
+    const minorRawText = `
+      Nom : BENJELLOUN
+      Prénom : Sami
+      Né le : 15.08.2012
+      N° CD123456
+    `;
+
+    const cleaned = clientHeuristicCleanse(minorRawText, 'doc.jpg', 'CNI');
+    expect(cleaned.cin).toBe('CD123456');
+    expect(cleaned.estConformeAgeLegal).toBe(false);
+    expect(cleaned.correctionsApportees.some((c) => c.includes('< 18 ans'))).toBe(true);
+  });
+});

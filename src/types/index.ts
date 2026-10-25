@@ -315,6 +315,14 @@ export interface OCRScanResult {
   apiProvider?: 'ocr.space' | 'simulation';
   nomFichier?: string;
   apercuUrl?: string;
+  aiValidation?: {
+    analyseEffectuee: boolean;
+    estConformeAgeLegal?: boolean;
+    correctionsApportees: string[];
+    remarqueSynthese: string;
+    modeleUtilise?: string;
+    confianceIA?: number;
+  };
 }
 
 export type OCRSimulationResult = OCRScanResult;

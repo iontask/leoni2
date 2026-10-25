@@ -326,6 +326,206 @@ app.get('/api/ocr/status', (_req: Request, res: Response) => {
 });
 
 /**
+ * Nettoyeur heuristique local en secours si Gemini n'est pas configuré
+ */
+function heuristicCleanse(rawText: string = '', fileName: string = '', currentFields: any = {}) {
+  const clean = parseOCRDocument(rawText, 'CNI');
+  let cin = clean.cinExtraite || currentFields.cin || '';
+  let nom = clean.nomExtrait || currentFields.nom || '';
+  let prenom = clean.prenomExtrait || currentFields.prenom || '';
+  let dateNaissance = clean.dateNaissanceExtraite || currentFields.dateNaissance || '';
+  const correctionsApportees: string[] = [];
+
+  // Correction des confusions OCR courantes sur les CNI marocaines (ex: O pour 0, espaces dans le CIN)
+  if (!cin && rawText) {
+    const rawCinMatches = [
+      rawText.match(/(?:N°|N\s*°|CIN|CARTE|ID|IDENTITE)\s*[:\.\s-]*([A-Z]{1,2}\s*[0-9OISB\s-]{4,10})/i),
+      rawText.match(/IDMAR\s*[:\.\s-]*([A-Z]{1,2}[0-9OISB\s-]{4,10})/i),
+      rawText.match(/\b([A-Z]{1,2}\s*[0-9][0-9OISB\s-]{3,9})\b/i),
+      rawText.match(/\b([A-Z]{1,2}\s*-[0-9OISB\s-]{4,10})\b/i)
+    ];
+    for (const m of rawCinMatches) {
+      if (m && m[1]) {
+        const candidateRaw = m[1].trim();
+        const lettersMatch = candidateRaw.match(/^[A-Z]{1,2}/i);
+        if (lettersMatch) {
+          const letters = lettersMatch[0].toUpperCase();
+          const digitsPart = candidateRaw
+            .slice(letters.length)
+            .replace(/O/gi, '0')
+            .replace(/I/gi, '1')
+            .replace(/S/gi, '5')
+            .replace(/B/gi, '8')
+            .replace(/[^0-9]/g, '');
+          const candidateCin = (letters + digitsPart).toUpperCase();
+          if (/^[A-Z]{1,2}[0-9]{4,8}$/.test(candidateCin)) {
+            cin = candidateCin;
+            correctionsApportees.push(`Extraction & correction OCR CIN : "${candidateRaw}" ➔ "${cin}"`);
+            break;
+          }
+        }
+      }
+    }
+  } else if (cin) {
+    const originalCin = cin;
+    const letters = cin.slice(0, 2).replace(/[^A-Z]/gi, '').toUpperCase();
+    const digits = cin.slice(letters.length).replace(/O/gi, '0').replace(/I/gi, '1').replace(/S/gi, '5').replace(/\s+/g, '');
+    const candidateCin = (letters + digits).toUpperCase();
+    if (/^[A-Z]{1,2}[0-9]{4,8}$/.test(candidateCin)) {
+      cin = candidateCin;
+      if (cin !== originalCin) {
+        correctionsApportees.push(`Normalisation CIN : ${originalCin} ➔ ${cin}`);
+      }
+    }
+  }
+
+  // Indice par le nom de fichier si nom ou prénom est manquant
+  if (fileName && (!nom || !prenom)) {
+    const cleanFn = fileName.replace(/\.[a-z0-9]+$/i, '').replace(/^(CIN|CNI|DOC)[_\s-]*/i, '');
+    if (cleanFn.length > 2 && /^[A-Za-z_-]+$/.test(cleanFn)) {
+      if (!prenom) {
+        prenom = cleanFn.charAt(0).toUpperCase() + cleanFn.slice(1).toLowerCase();
+        correctionsApportees.push(`Prénom suggéré depuis le fichier "${fileName}"`);
+      }
+    }
+  }
+
+  // Contrôle de l'âge légal (≥ 18 ans)
+  let estConformeAgeLegal = true;
+  if (dateNaissance) {
+    const birthYear = parseInt(dateNaissance.split('-')[0], 10);
+    const currentYear = new Date().getFullYear();
+    if (!isNaN(birthYear) && currentYear - birthYear < 18) {
+      estConformeAgeLegal = false;
+    }
+  }
+
+  const confianceGlobale = clean.confianceScore;
+
+  return {
+    cin,
+    nom,
+    prenom,
+    dateNaissance,
+    dateExpiration: clean.dateExpirationExtraite,
+    adresse: clean.adresseExtraite,
+    confianceGlobale,
+    estConformeAgeLegal,
+    correctionsApportees,
+    remarqueSynthese: cin || nom
+      ? `Validation heuristique effectuée : CIN ${cin || 'à vérifier'}, ${nom} ${prenom}.`
+      : 'Aucune donnée textuelle lisible détectée sur ce document.'
+  };
+}
+
+/**
+ * Route POST /api/ocr/cleanse-fields
+ * Phase IA (Gemini 3.8 Flash) pour nettoyer le contenu brut OCR et valider les champs CNI
+ */
+app.post('/api/ocr/cleanse-fields', async (req: Request, res: Response) => {
+  try {
+    const { rawText = '', fileName = '', documentType = 'CNI', currentFields = {} } = req.body;
+
+    logTechnicalEvent('INFO', 'AI_CLEANSE_REQUEST', `Nettoyage et validation IA pour document ${fileName || documentType}`);
+
+    // Si Gemini n'est pas initialisé (ex: pas de clé en environnement de test)
+    if (!ai) {
+      const fallbackClean = heuristicCleanse(rawText, fileName, currentFields);
+      return res.json({
+        success: true,
+        isSimulated: true,
+        modeleUtilise: 'heuristic-cleanser',
+        ...fallbackClean
+      });
+    }
+
+    const systemPrompt = `Tu es un assistant IA expert en vérification de documents d'identité marocains (Carte Nationale d'Identité - CNI / CNIE) pour l'usine automobile LEONI Maroc.
+L'utilisateur te fournit le texte brut extrait par OCR (pouvant contenir du bruit, des lettres coupées, du texte arabe et français, ou une zone MRZ au bas du document).
+Ton rôle est d'analyser, nettoyer et valider rigoureusement les informations pour remplir les champs de saisie :
+1. "cin" : Numéro officiel de la CIN marocaine (1 ou 2 lettres majuscules suivies de 4 à 8 chiffres, ex: BK654321, BJ123456, A123456, CD78901). Corrige les confusions OCR courantes (ex: chiffre 0 pris pour lettre O, tirets superflus). Laisse vide ("") si absent ou illisible.
+2. "nom" : Nom de famille officiel en MAJUSCULES (ex: CHRAIBI, BENANI). Supprime les bruits comme "ROYAUME", "MAROC", "CARTE", "NATIONALE". Laisse vide ("") si non trouvé.
+3. "prenom" : Prénom en Titlecase (ex: Youssra, Amine). Laisse vide ("") si non trouvé.
+4. "dateNaissance" : Date de naissance au format ISO strict AAAA-MM-JJ (ex: 1998-05-14). Laisse vide ("") si non trouvée.
+5. "dateExpiration" : Date d'expiration au format ISO AAAA-MM-JJ si présente. Laisse vide ("") si non trouvée.
+6. "adresse" : Adresse ou ville de résidence si présente. Laisse vide ("") si non trouvée.
+7. "estConformeAgeLegal" : Booléen vrai si l'âge calculé par rapport à 2026 est ≥ 18 ans.
+8. "confianceGlobale" : Score de confiance global de 0 à 100.
+9. "correctionsApportees" : Liste de phrases courtes décrivant les corrections ou normalisations effectuées (ex: "Correction du N° CIN", "Formatage ISO de la date de naissance", "Extraction du nom depuis la zone MRZ").
+10. "remarqueSynthese" : 1 à 2 phrases de synthèse en français pour l'opérateur RH.
+RÈGLE FONDAMENTALE : Si le document est totalement illisible ou vide, laisse les champs correspondants vides ("") sans inventer de fausses données. Tu peux aussi t'appuyer sur les indices du nom de fichier "${fileName}".`;
+
+    const userPrompt = `Données du document :
+Nom du fichier : ${fileName}
+Type : ${documentType}
+Champs provisoires : ${JSON.stringify(currentFields)}
+
+Texte brut extrait par l'OCR :
+"""
+${rawText || '(Aucun texte extrait)'}
+"""`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            cin: { type: Type.STRING, description: 'Numéro CIN marocain validé. Chaîne vide si non trouvé.' },
+            nom: { type: Type.STRING, description: 'Nom de famille en majuscules. Chaîne vide si non trouvé.' },
+            prenom: { type: Type.STRING, description: 'Prénom. Chaîne vide si non trouvé.' },
+            dateNaissance: { type: Type.STRING, description: 'Date de naissance au format ISO AAAA-MM-JJ. Chaîne vide si non trouvé.' },
+            dateExpiration: { type: Type.STRING, description: 'Date expiration au format ISO AAAA-MM-JJ.' },
+            adresse: { type: Type.STRING, description: 'Adresse ou commune.' },
+            confianceGlobale: { type: Type.INTEGER, description: 'Score de confiance global estimé de 0 à 100.' },
+            estConformeAgeLegal: { type: Type.BOOLEAN, description: 'Vrai si âge ≥ 18 ans.' },
+            correctionsApportees: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Liste des corrections effectuées.'
+            },
+            remarqueSynthese: {
+              type: Type.STRING,
+              description: 'Synthèse pour l\'opérateur.'
+            }
+          },
+          required: [
+            'cin',
+            'nom',
+            'prenom',
+            'dateNaissance',
+            'confianceGlobale',
+            'estConformeAgeLegal',
+            'correctionsApportees',
+            'remarqueSynthese'
+          ]
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+
+    return res.json({
+      success: true,
+      isSimulated: false,
+      modeleUtilise: 'gemini-3.8-flash',
+      ...parsed
+    });
+  } catch (err: any) {
+    logTechnicalEvent('ERROR', 'AI_CLEANSE_ERROR', `Erreur traitement IA: ${err.message}`);
+    const fallbackClean = heuristicCleanse(req.body?.rawText, req.body?.fileName, req.body?.currentFields);
+    return res.json({
+      success: true,
+      isSimulated: true,
+      modeleUtilise: 'heuristic-cleanser',
+      ...fallbackClean
+    });
+  }
+});
+
+/**
  * Route POST /api/gemini/analyze-gesture
  * Analyse multimodale assistée par IA d'un geste opératoire sur poste de câblage
  * Respecte strictement : "Suggestion IA, à valider par le formateur"
