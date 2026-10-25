@@ -453,3 +453,32 @@ describe('8. Logique Critique : Sécurité, Droits par Rôle & Masquage CIN', ()
     expect(evalSL.autorise).toBe(false);
   });
 });
+
+describe('9. Numérisation OCR.space & Compatibilité GitHub Pages (Anti-Erreur 405)', () => {
+  it('extrait correctement le CIN, Nom, Prénom et Date de Naissance d’une CNI marocaine', async () => {
+    const { parseMoroccanOCRDocument, mapRequirementToDocType } = await import('../services/ocrService');
+
+    const sampleRawText = `
+      ROYAUME DU MAROC
+      CARTE NATIONALE D'IDENTITE
+      Nom : BENJELLOUN
+      Prénom : Amine
+      Né le : 22.08.1999
+      N° BK789456
+      Valable jusqu'au : 15.06.2030
+      IDMARBK789456<<<<<<<<<<<<<<<
+    `;
+
+    const parsed = parseMoroccanOCRDocument(sampleRawText, 'CNI');
+    expect(parsed.cinExtraite).toBe('BK789456');
+    expect(parsed.nomExtrait).toBe('BENJELLOUN');
+    expect(parsed.prenomExtrait).toBe('Amine');
+    expect(parsed.dateNaissanceExtraite).toBe('1999-08-22');
+    expect(parsed.confianceScore).toBeGreaterThanOrEqual(90);
+    expect(parsed.estSimule).toBe(false);
+
+    expect(mapRequirementToDocType('DOC_CNI')).toBe('CNI');
+    expect(mapRequirementToDocType('DOC_DIPLOME')).toBe('DIPLOME');
+    expect(mapRequirementToDocType('DOC_CASIER')).toBe('CASIER');
+  });
+});
