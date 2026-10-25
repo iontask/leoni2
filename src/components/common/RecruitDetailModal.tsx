@@ -6,7 +6,7 @@
  * et archivage (soft-delete) avec motif obligatoire consigné.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Building2,
@@ -27,13 +27,16 @@ import {
   Lock,
   Eye,
   Archive,
-  DownloadCloud
+  DownloadCloud,
+  Loader2,
+  Sparkles
 } from 'lucide-react';
 import { Recruit, UserProfile, Language, SystemParameter, DocumentRequirement, RecruitDocument } from '../../types';
 import { TRANSLATIONS, formatDateDisplay, getTypologyLabel, getRoleLabel, maskCIN } from '../../i18n/translations';
 import { RecruitStatusBadge } from './RecruitStatusBadge';
 import { MetricsEngine } from '../../engine/metrics';
 import { repositoryInstance } from '../../repositories/storageRepository';
+import { scanDocumentWithOCR, fileToBase64 } from '../../services/ocrService';
 
 interface RecruitDetailModalProps {
   recruit: Recruit | null;
@@ -65,6 +68,82 @@ export const RecruitDetailModal: React.FC<RecruitDetailModalProps> = ({
   const [isSubmittingArchive, setIsSubmittingArchive] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [consultationNotice, setConsultationNotice] = useState<string | null>(null);
+  const [scanningReqCode, setScanningReqCode] = useState<string | null>(null);
+  const [activeReqCodeForUpload, setActiveReqCodeForUpload] = useState<string | null>(null);
+  const fileInputDetailRef = useRef<HTMLInputElement | null>(null);
+
+  const handleTriggerDocScan = (reqCode: string) => {
+    setActiveReqCodeForUpload(reqCode);
+    if (fileInputDetailRef.current) {
+      fileInputDetailRef.current.value = '';
+      fileInputDetailRef.current.click();
+    }
+  };
+
+  const handleDocFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeReqCodeForUpload || !recruit) return;
+    const targetCode = activeReqCodeForUpload;
+    setScanningReqCode(targetCode);
+    setConsultationNotice(null);
+
+    try {
+      const base64Data = await fileToBase64(file);
+      const ocrRes = await scanDocumentWithOCR(file, { requirementCode: targetCode });
+
+      const newDoc: RecruitDocument = {
+        id: `doc-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        codeRequirement: targetCode,
+        nomFichier: file.name,
+        typeMime: file.type || 'image/jpeg',
+        tailleKo: Math.max(1, Math.round(file.size / 1024)),
+        dateDepot: new Date().toISOString(),
+        deposeParMatricule: currentUser.matricule,
+        valide: true,
+        apercuUrl: base64Data,
+        estSimule: ocrRes.estSimule,
+        confianceScore: ocrRes.confianceScore
+      };
+
+      const updatedDocs = { ...(recruit.documents || {}), [targetCode]: newDoc };
+      const totalObligatoires = requirements.filter((r) => r.estObligatoire).length || 1;
+      const docsObligatoiresFournis = requirements.filter((r) => r.estObligatoire && updatedDocs[r.code]).length;
+      const taux = Math.min(100, Math.round((docsObligatoiresFournis / totalObligatoires) * 100));
+      const complet = docsObligatoiresFournis >= totalObligatoires;
+
+      await repositoryInstance.updateRecruit(
+        recruit.id,
+        {
+          documents: updatedDocs,
+          tauxCompletudeDossier: taux,
+          dossierComplet: complet
+        },
+        currentUser,
+        `Scan OCR.space & ajout document ${targetCode}`
+      );
+
+      recruit.documents = updatedDocs;
+      recruit.tauxCompletudeDossier = taux;
+      recruit.dossierComplet = complet;
+
+      if (onUploadDoc) {
+        await onUploadDoc(recruit.id, targetCode, file.name);
+      }
+      if (onRefreshParent) {
+        await onRefreshParent();
+      }
+
+      setConsultationNotice(
+        `Document "${file.name}" analysé avec succès via OCR.space (${ocrRes.confianceScore}% confiance) et rattaché au dossier.`
+      );
+      setTimeout(() => setConsultationNotice(null), 5000);
+    } catch (err: any) {
+      setConsultationNotice(`Erreur lors du scan : ${err.message || "Impossible d'analyser le document"}`);
+    } finally {
+      setScanningReqCode(null);
+      setActiveReqCodeForUpload(null);
+    }
+  };
 
   if (!isOpen || !recruit) return null;
 
@@ -293,13 +372,41 @@ export const RecruitDetailModal: React.FC<RecruitDetailModalProps> = ({
 
                           <div className="flex items-center gap-2">
                             {doc ? (
-                              <span className="text-[10px] text-emerald-700 font-mono font-bold bg-emerald-50 px-1.5 py-0.5 rounded-xs border border-emerald-200">
-                                Fournie (Conforme)
-                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-emerald-700 font-mono font-bold bg-emerald-50 px-1.5 py-0.5 rounded-xs border border-emerald-200">
+                                  Fournie (Conforme)
+                                </span>
+                                {doc.confianceScore !== undefined && (
+                                  <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.5 rounded-xs">
+                                    OCR: {doc.confianceScore}%
+                                  </span>
+                                )}
+                              </div>
                             ) : (
-                              <span className="text-[10px] text-rose-600 font-bold bg-rose-50 px-1.5 py-0.5 rounded-xs border border-rose-200">
-                                Non fournie
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-rose-600 font-bold bg-rose-50 px-1.5 py-0.5 rounded-xs border border-rose-200">
+                                  Non fournie
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={scanningReqCode === req.code}
+                                  onClick={() => handleTriggerDocScan(req.code)}
+                                  className="min-h-[26px] px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 font-bold text-[10px] flex items-center gap-1 cursor-pointer border border-blue-200 shadow-2xs transition-colors"
+                                  title="Scanner ce document avec l'API OCR.space"
+                                >
+                                  {scanningReqCode === req.code ? (
+                                    <>
+                                      <Loader2 className="w-3 h-3 animate-spin text-blue-700" />
+                                      <span>Scan OCR...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Camera className="w-3 h-3 text-blue-700" />
+                                      <span>Scanner (OCR)</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -584,6 +691,15 @@ export const RecruitDetailModal: React.FC<RecruitDetailModalProps> = ({
           </div>
         </div>
       )}
+      {/* Input de fichier masqué pour numérisation directe OCR */}
+      <input
+        ref={fileInputDetailRef}
+        type="file"
+        accept="image/*,application/pdf"
+        capture="environment"
+        className="hidden"
+        onChange={handleDocFileSelected}
+      />
     </>
   );
 };

@@ -296,18 +296,28 @@ export interface RecruitDocument {
   dateDepot: string; // ISO
   deposeParMatricule: string;
   apercuUrl?: string;
+  valide?: boolean;
+  estSimule?: boolean;
+  confianceScore?: number;
 }
 
-export interface OCRSimulationResult {
+export interface OCRScanResult {
   cinExtraite: string;
   nomExtrait: string;
   prenomExtrait: string;
   dateNaissanceExtraite: string;
+  dateExpirationExtraite?: string;
   adresseExtraite?: string;
   confianceScore: number; // 0..100
-  sourceDocument: 'CNI' | 'DIPLOME';
-  estSimule: true;
+  sourceDocument: 'CNI' | 'DIPLOME' | 'CASIER' | 'MEDICAL' | 'AUTRE';
+  estSimule: boolean; // false = API réelle OCR.space, true = simulation
+  rawText?: string;
+  apiProvider?: 'ocr.space' | 'simulation';
+  nomFichier?: string;
+  apercuUrl?: string;
 }
+
+export type OCRSimulationResult = OCRScanResult;
 
 export interface Recruit {
   id: string;

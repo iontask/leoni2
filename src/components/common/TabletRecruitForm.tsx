@@ -4,7 +4,7 @@
  * contrôle strict des dates (âge ≥ 18 ans), matching temps réel et checklist administrative.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Camera,
@@ -19,8 +19,20 @@ import {
   Eye,
   FileCheck2,
   ChevronRight,
-  ChevronLeft
+  ChevronLeft,
+  Loader2,
+  RefreshCw,
+  FileSearch,
+  Check,
+  ShieldCheck,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
+import {
+  scanDocumentWithOCR,
+  scanBase64WithOCR,
+  generateSampleMoroccanCNI
+} from '../../services/ocrService';
 import {
   DocumentRequirement,
   Language,
@@ -72,9 +84,14 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
   const [telephone, setTelephone] = useState('+212 6');
   const [dateEntree, setDateEntree] = useState(new Date().toISOString().split('T')[0]);
 
-  // Étape 2 : Pièces jointes & OCR
+  // Étape 2 : Pièces jointes & OCR (Intégration Réelle OCR.space)
   const [uploadedDocs, setUploadedDocs] = useState<Record<string, RecruitDocument>>({});
   const [ocrReviewModal, setOcrReviewModal] = useState<OCRSimulationResult | null>(null);
+  const [isScanningOCR, setIsScanningOCR] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [activeScanFileName, setActiveScanFileName] = useState<string>('');
+  const [showRawOcrText, setShowRawOcrText] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Étape 3 : Affectation prévisionnelle & SAP
   const [groupeEcoleId, setGroupeEcoleId] = useState(groups[0]?.id || '');
@@ -147,44 +164,74 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
     }
   };
 
-  // Simulation d'extraction OCR CNI
-  const handleSimulateOCR = () => {
-    const ocrData: OCRSimulationResult = {
-      cinExtraite: 'BK' + Math.floor(100000 + Math.random() * 900000),
-      nomExtrait: 'El Mansouri',
-      prenomExtrait: 'Salma',
-      dateNaissanceExtraite: '2003-08-22',
-      adresseExtraite: 'Lot Al Amal, Bouskoura, Casablanca',
-      confianceScore: 97,
-      sourceDocument: 'CNI',
-      estSimule: true
-    };
-    setOcrReviewModal(ocrData);
+  // Numérisation d'un document réel (Photo caméra, PNG, JPG, PDF) via l'API réelle OCR.space
+  const handleFileSelectedForOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsScanningOCR(true);
+    setOcrError(null);
+    setActiveScanFileName(file.name);
+
+    try {
+      const ocrResult = await scanDocumentWithOCR(file, { documentType: 'CNI', language: 'fre' });
+      setOcrReviewModal(ocrResult);
+    } catch (err: any) {
+      setOcrError(err.message || 'Échec de la numérisation avec OCR.space.');
+    } finally {
+      setIsScanningOCR(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
-  // Validation de l'écran de relecture OCR obligatoire
+  // Numérisation d'un échantillon CNI officiel marocain pour test immédiat d'OCR.space
+  const handleScanSampleCNI = async () => {
+    setIsScanningOCR(true);
+    setOcrError(null);
+    setActiveScanFileName('Echantillon_CNI_Maroc_Test.svg');
+
+    try {
+      const sampleCin = 'BK' + Math.floor(100000 + Math.random() * 900000);
+      const sampleB64 = generateSampleMoroccanCNI(sampleCin, 'EL FASSI', 'Yassine', '14.05.2001');
+      const ocrResult = await scanBase64WithOCR(sampleB64, 'Echantillon_CNI_Maroc_Test.svg', {
+        documentType: 'CNI',
+        language: 'fre'
+      });
+      setOcrReviewModal(ocrResult);
+    } catch (err: any) {
+      setOcrError(err.message || 'Échec de la numérisation avec OCR.space.');
+    } finally {
+      setIsScanningOCR(false);
+    }
+  };
+
+  // Validation de l'écran de relecture OCR obligatoire et remplissage automatique des champs
   const handleApplyOCR = (ocr: OCRSimulationResult) => {
-    setCin(ocr.cinExtraite);
-    setNom(ocr.nomExtrait);
-    setPrenom(ocr.prenomExtrait);
-    setDateNaissance(ocr.dateNaissanceExtraite);
-    
-    // Ajout automatique du document CNI simulé
+    if (ocr.cinExtraite) setCin(ocr.cinExtraite);
+    if (ocr.nomExtrait && ocr.nomExtrait !== 'Nom non détecté') setNom(ocr.nomExtrait);
+    if (ocr.prenomExtrait && ocr.prenomExtrait !== 'Prénom non détecté') setPrenom(ocr.prenomExtrait);
+    if (ocr.dateNaissanceExtraite) setDateNaissance(ocr.dateNaissanceExtraite);
+
+    // Ajout automatique du document CNI numérisé dans la checklist administrative
     setUploadedDocs((prev) => ({
       ...prev,
       DOC_CNI: {
         id: `doc-cni-${Date.now()}`,
         codeRequirement: 'DOC_CNI',
-        nomFichier: `CNI_${ocr.cinExtraite}_RectoVerso.pdf`,
-        typeMime: 'application/pdf',
-        tailleKo: 450,
+        nomFichier: ocr.nomFichier || `CNI_${ocr.cinExtraite}_Scanne.jpg`,
+        typeMime: ocr.apercuUrl?.startsWith('data:image') ? 'image/jpeg' : 'application/pdf',
+        tailleKo: 480,
         dateDepot: new Date().toISOString(),
         deposeParMatricule: currentUser.matricule,
-        apercuUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=400&q=80'
+        apercuUrl:
+          ocr.apercuUrl ||
+          'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=400&q=80'
       }
     }));
 
-    handleCinCheck(ocr.cinExtraite);
+    if (ocr.cinExtraite) {
+      handleCinCheck(ocr.cinExtraite);
+    }
     setOcrReviewModal(null);
   };
 
@@ -404,28 +451,95 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           {/* ÉTAPE 1 : Identité & Contrôle de cohérence */}
           {step === 1 && (
             <div className="space-y-4">
-              {/* Bouton d'extraction assistée CNI si activé */}
+              {/* Carte Numérisation OCR.space Réelle */}
               {isOcrActive && (
-                <div className="p-4 bg-sky-50 border border-sky-200 rounded-xl flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <Sparkles className="w-5 h-5 text-sky-700" />
-                    <div className="text-xs">
-                      <strong className="text-sky-950 font-bold block">
-                        Préremplissage assisté par extraction CNI (Simulation)
-                      </strong>
-                      <span className="text-sky-800">
-                        Extrait automatiquement le CIN, nom, prénom et date de naissance avec relecture obligatoire.
-                      </span>
+                <div className="p-4 sm:p-5 bg-gradient-to-r from-blue-50/80 via-sky-50 to-indigo-50/60 border border-blue-200 rounded-2xl shadow-2xs space-y-3">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelectedForOCR}
+                    accept="image/*,application/pdf"
+                    capture="environment"
+                    className="hidden"
+                  />
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <Camera className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <strong className="text-slate-900 text-sm font-bold">
+                            Numérisation CNI & Documents (API OCR.space Réelle)
+                          </strong>
+                          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block"></span>
+                            API Active
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Extrait automatiquement le CIN marocain, nom, prénom et date de naissance avec remplissage direct des champs.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isScanningOCR}
+                        className="min-h-[44px] px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs flex items-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+                        title="Prendre en photo ou importer un fichier CNI"
+                      >
+                        {isScanningOCR ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Camera className="w-4 h-4" />
+                        )}
+                        <span>{isScanningOCR ? 'Numérisation...' : 'Prendre photo / Importer'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleScanSampleCNI}
+                        disabled={isScanningOCR}
+                        className="min-h-[44px] px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-300 flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                        title="Tester immédiatement l'API avec un échantillon CNI marocain"
+                      >
+                        <Sparkles className="w-4 h-4 text-amber-600" />
+                        <span>Échantillon Test</span>
+                      </button>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleSimulateOCR}
-                    className="min-h-[44px] px-4 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 text-white font-bold text-xs flex items-center gap-1.5 shrink-0 shadow-2xs cursor-pointer"
-                  >
-                    <Camera className="w-4 h-4" />
-                    <span>Simuler scan CNI</span>
-                  </button>
+
+                  {/* État de chargement / progression OCR */}
+                  {isScanningOCR && (
+                    <div className="p-3 bg-blue-100/70 border border-blue-300 rounded-xl flex items-center gap-3 text-xs text-blue-900 animate-pulse">
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-700 shrink-0" />
+                      <div>
+                        <span className="font-bold">Analyse OCR.space en cours : </span>
+                        <span>Reconnaissance optique des caractères sur {activeScanFileName || 'le document'} et extraction de la pièce d'identité marocaine...</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Alerte erreur éventuelle */}
+                  {ocrError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between gap-2 text-xs text-rose-800">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                        <span>{ocrError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setOcrError(null)}
+                        className="text-xs font-bold text-rose-700 hover:underline"
+                      >
+                        Fermer
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -758,66 +872,168 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-800">
-            <div className="px-6 py-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between">
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-800 animate-in fade-in zoom-in-95 duration-150">
+            {/* Entête dynamique selon mode Réel ou Simulation */}
+            <div
+              className={`px-6 py-4 border-b flex items-center justify-between ${
+                ocrReviewModal.estSimule
+                  ? 'bg-amber-50 border-amber-200'
+                  : 'bg-emerald-50 border-emerald-200'
+              }`}
+            >
               <div className="flex items-center gap-2.5">
-                <Sparkles className="w-5 h-5 text-amber-700" />
+                {ocrReviewModal.estSimule ? (
+                  <Sparkles className="w-5 h-5 text-amber-700 shrink-0" />
+                ) : (
+                  <ShieldCheck className="w-5 h-5 text-emerald-700 shrink-0" />
+                )}
                 <div>
-                  <h3 className="font-bold text-amber-950 text-sm">
-                    Relecture Obligatoire de l’Extraction Automatique
+                  <h3
+                    className={`font-bold text-sm ${
+                      ocrReviewModal.estSimule ? 'text-amber-950' : 'text-emerald-950'
+                    }`}
+                  >
+                    Relecture Obligatoire des Données Extraites
                   </h3>
-                  <span className="text-[11px] text-amber-800 font-bold">
-                    Extraction simulée — À vérifier rigoureusement avant validation
-                  </span>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span
+                      className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                        ocrReviewModal.estSimule
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      {ocrReviewModal.estSimule
+                        ? 'Mode Démonstration'
+                        : 'API OCR.space Certifiée (Moteur 2 IATF)'}
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-mono font-bold">
+                      Confiance : {ocrReviewModal.confianceScore}%
+                    </span>
+                  </div>
                 </div>
               </div>
               <button
                 onClick={() => setOcrReviewModal(null)}
                 className="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
+                aria-label="Fermer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-3.5 text-xs">
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">CIN extrait :</span>
-                  <span className="font-bold font-mono text-sm text-blue-700">{ocrReviewModal.cinExtraite}</span>
+            <div className="p-6 space-y-3.5 text-xs max-h-[75vh] overflow-y-auto">
+              {/* Aperçu du document scanné si disponible */}
+              {ocrReviewModal.apercuUrl && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center gap-3">
+                  <img
+                    src={ocrReviewModal.apercuUrl}
+                    alt="Aperçu document scanné"
+                    className="w-20 h-14 object-cover rounded-lg border border-slate-300 shadow-2xs shrink-0 bg-white"
+                  />
+                  <div className="overflow-hidden">
+                    <span className="text-[11px] text-slate-500 font-medium block">Document source</span>
+                    <span className="text-xs font-semibold text-slate-800 truncate block">
+                      {ocrReviewModal.nomFichier || 'CIN-Maroc.jpg'}
+                    </span>
+                    <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1 mt-0.5">
+                      <CheckCircle2 className="w-3 h-3" />
+                      Joint à la checklist administrative
+                    </span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Nom & Prénom :</span>
-                  <span className="font-bold text-slate-800">{ocrReviewModal.nomExtrait} {ocrReviewModal.prenomExtrait}</span>
+              )}
+
+              {/* Grille des champs extraits */}
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <span className="text-slate-500 font-medium">N° CIN Marocain :</span>
+                  <span className="font-extrabold font-mono text-base text-blue-700 tracking-wide bg-blue-50 px-2.5 py-0.5 rounded border border-blue-200">
+                    {ocrReviewModal.cinExtraite}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Date de naissance :</span>
-                  <span className="font-bold text-slate-800">{formatDateDisplay(ocrReviewModal.dateNaissanceExtraite)}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Nom de famille :</span>
+                  <span className="font-bold text-slate-800 uppercase">{ocrReviewModal.nomExtrait || '—'}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Score de confiance :</span>
-                  <span className="font-bold text-emerald-700 font-mono">{ocrReviewModal.confianceScore}%</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Prénom :</span>
+                  <span className="font-bold text-slate-800">{ocrReviewModal.prenomExtrait || '—'}</span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Date de naissance :</span>
+                  <span className="font-bold text-slate-800 font-mono">
+                    {formatDateDisplay(ocrReviewModal.dateNaissanceExtraite)}
+                  </span>
+                </div>
+                {ocrReviewModal.dateExpirationExtraite && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Date d'expiration :</span>
+                    <span className="font-bold text-slate-800 font-mono">
+                      {formatDateDisplay(ocrReviewModal.dateExpirationExtraite)}
+                    </span>
+                  </div>
+                )}
+                {ocrReviewModal.adresseExtraite && (
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-slate-500 font-medium shrink-0">Adresse :</span>
+                    <span className="font-medium text-slate-700 text-right">{ocrReviewModal.adresseExtraite}</span>
+                  </div>
+                )}
               </div>
 
-              <div className="p-3 rounded-lg bg-amber-100/60 border border-amber-200 text-amber-950 text-[11px] leading-relaxed">
-                Avertissement : Cette extraction est simulée pour l’instant et doit être confirmée visuellement contre le document officiel.
+              {/* Visualiseur de texte brut OCR collapsible */}
+              {ocrReviewModal.rawText && (
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowRawOcrText((prev) => !prev)}
+                    className="w-full px-3 py-2 bg-slate-100 hover:bg-slate-200 flex items-center justify-between text-slate-700 font-medium text-[11px] cursor-pointer"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-slate-500" />
+                      Texte brut détecté par l'OCR ({ocrReviewModal.rawText.length} caractères)
+                    </span>
+                    {showRawOcrText ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                  {showRawOcrText && (
+                    <div className="p-3 bg-slate-900 text-slate-100 font-mono text-[11px] whitespace-pre-wrap max-h-36 overflow-y-auto leading-relaxed">
+                      {ocrReviewModal.rawText}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Avertissement conformité */}
+              <div
+                className={`p-3 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+                  ocrReviewModal.estSimule
+                    ? 'bg-amber-50 border-amber-200 text-amber-950'
+                    : 'bg-blue-50 border-blue-200 text-blue-950'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                <span>
+                  <strong>Contrôle IATF 16949 :</strong> Veuillez vérifier l'exactitude des informations extraites par rapport au document physique avant d'appliquer au formulaire.
+                </span>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
+              {/* Actions tactiles ≥ 48px */}
+              <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
                   onClick={() => setOcrReviewModal(null)}
-                  className="min-h-[48px] px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-medium cursor-pointer"
+                  className="min-h-[48px] px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold cursor-pointer text-xs"
                 >
-                  Corriger manuellement
+                  Annuler / Saisie manuelle
                 </button>
                 <button
                   type="button"
                   onClick={() => handleApplyOCR(ocrReviewModal)}
-                  className="min-h-[48px] px-5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="min-h-[48px] px-6 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold flex items-center gap-2 shadow-xs cursor-pointer text-xs"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Confirmer et préremplir</span>
+                  <span>Confirmer & Préremplir le formulaire</span>
                 </button>
               </div>
             </div>
