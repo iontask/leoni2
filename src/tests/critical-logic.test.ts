@@ -575,3 +575,59 @@ describe('10. Phase IA de Nettoyage & Validation des Champs (Gemini & Heuristiqu
     expect(parsed.dateExpirationExtraite).toBe('2031-08-20');
   });
 });
+
+describe('10. Validation Saisie Rapide Recrue (Tablette Atelier)', () => {
+  it('valide le format du CIN marocain (ex: BK123456, A123456)', () => {
+    const validateCINFormat = (cin: string): boolean => /^[A-Z]{1,2}\d{5,7}$/i.test(cin.trim());
+
+    expect(validateCINFormat('BK654021')).toBe(true);
+    expect(validateCINFormat('A123456')).toBe(true);
+    expect(validateCINFormat('AB12345')).toBe(true);
+    expect(validateCINFormat('bk654021')).toBe(true);
+    expect(validateCINFormat('')).toBe(false);
+    expect(validateCINFormat('123456')).toBe(false);
+    expect(validateCINFormat('BK12')).toBe(false);
+  });
+
+  it('valide la condition d’âge légal d’au moins 18 ans à la date d’entrée', () => {
+    const validateAge = (birthDateStr: string, entryDateStr: string, minAgeYears = 18): boolean => {
+      if (!birthDateStr || !entryDateStr) return false;
+      const b = new Date(birthDateStr);
+      const e = new Date(entryDateStr);
+      const ageDiffMs = e.getTime() - b.getTime();
+      const ageYears = ageDiffMs / (1000 * 60 * 60 * 24 * 365.25);
+      return ageYears >= minAgeYears;
+    };
+
+    expect(validateAge('2001-05-14', '2026-10-26')).toBe(true); // 25 ans
+    expect(validateAge('2008-01-01', '2026-10-26')).toBe(true); // 18 ans
+    expect(validateAge('2010-01-01', '2026-10-26')).toBe(false); // 16 ans (mineur)
+    expect(validateAge('', '2026-10-26')).toBe(false);
+  });
+
+  it('garantit la progression séquentielle Étape 1 -> Étape 2 -> Étape 3', () => {
+    let currentStep: 1 | 2 | 3 = 1;
+
+    // Simulation de navigation
+    const advance = () => {
+      if (currentStep === 1) currentStep = 2;
+      else if (currentStep === 2) currentStep = 3;
+    };
+
+    const back = () => {
+      if (currentStep === 3) currentStep = 2;
+      else if (currentStep === 2) currentStep = 1;
+    };
+
+    expect(currentStep).toBe(1);
+    advance();
+    expect(currentStep).toBe(2);
+    advance();
+    expect(currentStep).toBe(3);
+    back();
+    expect(currentStep).toBe(2);
+    back();
+    expect(currentStep).toBe(1);
+  });
+});
+

@@ -39,12 +39,26 @@
           }
         } catch (_) {}
 
-        // Filtrer les erreurs non gérées provenant d'extensions de navigateur
+        // Filtrer les erreurs non gérées et rejets WebSocket normaux en environnement sandbox/proxy (HMR désactivé)
         window.addEventListener('error', function(event) {
           if (
             (event.filename && event.filename.includes('chrome-extension://')) ||
-            (event.message && event.message.includes('Cannot set property fetch'))
+            (event.message && (
+              event.message.includes('Cannot set property fetch') ||
+              event.message.includes('WebSocket') ||
+              event.message.includes('websocket')
+            ))
           ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        // Supprimer les rejets non gérés de WebSocket Vite (fermé sans ouverture dans le proxy Cloud)
+        window.addEventListener('unhandledrejection', function(event) {
+          var msg = event && event.reason ? String(event.reason.message || event.reason) : '';
+          if (msg.includes('WebSocket') || msg.includes('websocket')) {
             event.preventDefault();
             event.stopImmediatePropagation();
             return true;

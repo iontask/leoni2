@@ -98,6 +98,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
   const [activeScanFileName, setActiveScanFileName] = useState<string>('');
   const [showRawOcrText, setShowRawOcrText] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Étape 3 : Affectation prévisionnelle & SAP
   const [groupeEcoleId, setGroupeEcoleId] = useState(groups[0]?.id || '');
@@ -523,30 +524,112 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
   const obligatoiresFournies = requirements.filter((r) => r.estObligatoire && uploadedDocs[r.code]).length;
   const completudePourcent = Math.round((Object.keys(uploadedDocs).length / requirements.length) * 100);
 
-  // Navigation Étape 1 -> Étape 2
-  const handleGoStep2 = () => {
+  // Validation rigoureuse de l'Étape 1 (Identité & CIN)
+  const validateStep1 = (): boolean => {
     const errs: { [key: string]: string } = {};
+    const cleanCin = cin.trim().toUpperCase().replace(/\s+/g, '');
 
-    if (!cin.trim()) errs.cin = 'Le CIN est obligatoire (clé d’identification).';
-    else if (!validateCINFormat(cin)) errs.cin = 'Format CIN invalide (ex: BK123456).';
+    if (!cleanCin) {
+      errs.cin = 'Le CIN marocain est obligatoire (clé d’identification pivot).';
+    } else if (!validateCINFormat(cleanCin)) {
+      errs.cin = 'Format CIN marocain invalide (ex: BK123456, A123456).';
+    }
 
     if (!nom.trim()) errs.nom = 'Le nom de famille est obligatoire.';
     if (!prenom.trim()) errs.prenom = 'Le prénom est obligatoire.';
 
-    if (!dateNaissance) errs.dateNaissance = 'La date de naissance est obligatoire.';
-    if (!dateEntree) errs.dateEntree = 'La date d’entrée est obligatoire.';
+    if (!dateNaissance) {
+      errs.dateNaissance = 'La date de naissance est obligatoire.';
+    }
+    if (!dateEntree) {
+      errs.dateEntree = 'La date d’entrée en usine est obligatoire.';
+    }
 
     if (dateNaissance && dateEntree && !validateAge(dateNaissance, dateEntree)) {
-      errs.dateNaissance = `L’opérateur doit être majeur (au moins ${minAgeYears} ans à la date d’entrée).`;
+      errs.dateNaissance = `L’opérateur doit être majeur (au moins ${minAgeYears} ans révolus à la date d’entrée).`;
     }
 
-    if (Object.keys(errs).length > 0) {
-      setErrors(errs);
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  // Navigation séquentielle (Étape 1 -> Étape 2 -> Étape 3)
+  const handleGoNext = () => {
+    if (step === 1) {
+      if (!validateStep1()) {
+        contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      setErrors({});
+      setStep(2);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (step === 2) {
+      // Débloque l'accès à l'étape 3
+      setStep(3);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Retour à l'étape précédente
+  const handleGoBack = () => {
+    if (step === 3) {
+      setStep(2);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (step === 2) {
+      setStep(1);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      onClose();
+    }
+  };
+
+  // Sélection directe d'un onglet du stepper
+  const handleSelectStep = (targetStep: 1 | 2 | 3) => {
+    if (targetStep === 1) {
+      setStep(1);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-
+    // Pour aller aux étapes 2 ou 3, l'étape 1 doit être valide
+    if (!validateStep1()) {
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
     setErrors({});
-    setStep(2);
+    setStep(targetStep);
+    contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Préremplissage instantané d'un profil démo complet
+  const handleFillDemoCandidate = () => {
+    const demoCin = 'BK' + Math.floor(100000 + Math.random() * 900000);
+    setCin(demoCin);
+    setNom('EL FASSI');
+    setPrenom('Yassine');
+    setDateNaissance('2001-05-14');
+    setTelephone('+212 661-234567');
+    setDateEntree(new Date().toISOString().split('T')[0]);
+    handleCinCheck(demoCin);
+    setErrors({});
+  };
+
+  // Compléter toutes les pièces de la checklist en 1 clic (Test / Simulation)
+  const handleCompleteAllDocsDemo = () => {
+    const newDocs: Record<string, RecruitDocument> = { ...uploadedDocs };
+    requirements.forEach((req) => {
+      if (!newDocs[req.code]) {
+        newDocs[req.code] = {
+          id: `doc-${req.code}-${Date.now()}`,
+          codeRequirement: req.code,
+          nomFichier: `${req.code}_${cin || 'LEONI'}.pdf`,
+          typeMime: 'application/pdf',
+          tailleKo: Math.floor(280 + Math.random() * 320),
+          dateDepot: new Date().toISOString(),
+          deposeParMatricule: currentUser.matricule
+        };
+      }
+    });
+    setUploadedDocs(newDocs);
   };
 
   // Soumission finale du dossier
@@ -595,15 +678,15 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-3 sm:p-5 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 md:p-6 overflow-hidden"
       role="dialog"
       aria-modal="true"
     >
-      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-800 flex flex-col max-h-[94vh]">
+      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-800 flex flex-col max-h-[92vh]">
         {/* En-tête tablette */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-b border-slate-200">
+        <div className="flex items-center justify-between px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 border-b border-slate-200 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs">
               <FileText className="w-6 h-6" />
             </div>
             <div>
@@ -622,40 +705,73 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="w-12 h-12 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 focus:outline-hidden cursor-pointer"
+            className="w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 focus:outline-hidden cursor-pointer"
             aria-label={t.close}
           >
             <X className="w-6 h-6" />
           </button>
         </div>
 
-        {/* Indicateur d'étapes (Stepper) */}
-        <div className="px-6 py-3 bg-slate-100/70 border-b border-slate-200 grid grid-cols-3 gap-2 text-xs font-bold text-center">
-          <div
-            className={`py-2 px-3 rounded-xl transition-all ${
-              step === 1 ? 'bg-blue-700 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200'
+        {/* Indicateur d'étapes (Stepper interactif) */}
+        <div className="px-3 sm:px-6 py-2.5 bg-slate-100/80 border-b border-slate-200 grid grid-cols-3 gap-1.5 sm:gap-2 text-xs font-bold shrink-0">
+          <button
+            type="button"
+            onClick={() => handleSelectStep(1)}
+            className={`py-2 px-2 sm:px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer text-left ${
+              step === 1
+                ? 'bg-blue-700 text-white shadow-xs'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
             }`}
           >
-            1. Identité & CIN
-          </div>
-          <div
-            className={`py-2 px-3 rounded-xl transition-all ${
-              step === 2 ? 'bg-blue-700 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200'
+            <span
+              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 font-extrabold ${
+                step === 1 ? 'bg-white text-blue-700' : 'bg-slate-100 text-slate-600 border border-slate-200'
+              }`}
+            >
+              1
+            </span>
+            <span className="truncate">1. Identité</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSelectStep(2)}
+            className={`py-2 px-2 sm:px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer text-left ${
+              step === 2
+                ? 'bg-blue-700 text-white shadow-xs'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
             }`}
           >
-            2. Pièces & Complétude ({obligatoiresFournies}/{totalObligatoires})
-          </div>
-          <div
-            className={`py-2 px-3 rounded-xl transition-all ${
-              step === 3 ? 'bg-blue-700 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200'
+            <span
+              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 font-extrabold ${
+                step === 2 ? 'bg-white text-blue-700' : 'bg-slate-100 text-slate-600 border border-slate-200'
+              }`}
+            >
+              2
+            </span>
+            <span className="truncate">2. Pièces ({obligatoiresFournies}/{totalObligatoires})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSelectStep(3)}
+            className={`py-2 px-2 sm:px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer text-left ${
+              step === 3
+                ? 'bg-blue-700 text-white shadow-xs'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
             }`}
           >
-            3. École, Segment & SAP
-          </div>
+            <span
+              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 font-extrabold ${
+                step === 3 ? 'bg-white text-blue-700' : 'bg-slate-100 text-slate-600 border border-slate-200'
+              }`}
+            >
+              3
+            </span>
+            <span className="truncate">3. Affectation & SAP</span>
+          </button>
         </div>
 
-        {/* Corps du formulaire */}
-        <div className="p-6 overflow-y-auto space-y-5 text-sm flex-1">
+        {/* Corps du formulaire avec overflow-x-hidden strict */}
+        <div ref={contentScrollRef} className="p-4 sm:p-6 overflow-y-auto overflow-x-hidden space-y-5 text-sm flex-1">
           {/* Alerte doublon ou antécédent multisite en temps réel */}
           {matchingWarning && (
             <div
@@ -718,9 +834,29 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           {/* ÉTAPE 1 : Identité & Contrôle de cohérence */}
           {step === 1 && (
             <div className="space-y-4">
-              {/* Carte Numérisation OCR.space Réelle */}
+              {/* Alerte Erreurs de validation de l'Étape 1 */}
+              {Object.keys(errors).length > 0 && (
+                <div className="p-3.5 bg-rose-50 border border-rose-300 rounded-xl text-rose-900 text-xs flex items-start gap-2.5 animate-in fade-in">
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <strong className="font-bold text-rose-950 block text-xs">
+                      Veuillez renseigner les champs obligatoires avant de continuer :
+                    </strong>
+                    <ul className="mt-1 list-disc list-inside space-y-0.5 text-rose-800 font-medium">
+                      {errors.cin && <li>{errors.cin}</li>}
+                      {errors.nom && <li>{errors.nom}</li>}
+                      {errors.prenom && <li>{errors.prenom}</li>}
+                      {errors.dateNaissance && <li>{errors.dateNaissance}</li>}
+                      {errors.dateEntree && <li>{errors.dateEntree}</li>}
+                      {errors.global && <li>{errors.global}</li>}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Carte Numérisation OCR.space Réelle avec boutons responsive en grille */}
               {isOcrActive && (
-                <div className="p-4 sm:p-5 bg-gradient-to-r from-blue-50/80 via-sky-50 to-indigo-50/60 border border-blue-200 rounded-2xl shadow-2xs space-y-3">
+                <div className="p-4 sm:p-5 bg-gradient-to-r from-blue-50/80 via-sky-50 to-indigo-50/60 border border-blue-200 rounded-2xl shadow-2xs space-y-3.5">
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -730,68 +866,67 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                     className="hidden"
                   />
 
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs">
-                        <Camera className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <strong className="text-slate-900 text-sm font-bold">
-                            Numérisation CNI & Documents (API OCR.space Réelle)
-                          </strong>
-                          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block"></span>
-                            API Active
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Extrait automatiquement le CIN marocain, nom, prénom et date de naissance avec remplissage direct des champs.
-                        </p>
-                      </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <Camera className="w-5 h-5" />
                     </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isScanningOCR}
-                        className="min-h-[44px] px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs flex items-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
-                        title="Prendre en photo ou importer un fichier CNI"
-                      >
-                        {isScanningOCR ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Camera className="w-4 h-4" />
-                        )}
-                        <span>{isScanningOCR ? 'Numérisation...' : 'Prendre photo / Importer'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleScanSampleCNI}
-                        disabled={isScanningOCR}
-                        className="min-h-[44px] px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-300 flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
-                        title="Tester immédiatement l'API avec un échantillon CNI marocain"
-                      >
-                        <Sparkles className="w-4 h-4 text-amber-600" />
-                        <span>Échantillon Test</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRawTextToAnalyze('');
-                          setIsRawTextModalOpen(true);
-                        }}
-                        disabled={isScanningOCR || isAIPostProcessing}
-                        className="min-h-[44px] px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 font-semibold text-xs border border-indigo-300 flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
-                        title="Coller ou tester directement du texte brut extrait par OCR pour que l'IA peuple les champs"
-                      >
-                        <Sparkles className="w-4 h-4 text-indigo-600" />
-                        <span>Analyser Texte Brut (IA)</span>
-                      </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <strong className="text-slate-900 text-sm font-bold">
+                          Numérisation CNI & Documents (API OCR.space Réelle)
+                        </strong>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block"></span>
+                          API Active
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Extrait automatiquement le CIN marocain, nom, prénom et date de naissance avec remplissage direct des champs.
+                      </p>
                     </div>
+                  </div>
+
+                  {/* 3 boutons d'action en grille responsive sans débordement horizontal */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isScanningOCR}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+                      title="Prendre en photo ou importer un fichier CNI"
+                    >
+                      {isScanningOCR ? (
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      ) : (
+                        <Camera className="w-4 h-4 shrink-0" />
+                      )}
+                      <span className="truncate">{isScanningOCR ? 'Numérisation...' : 'Photo / Importer CNI'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleScanSampleCNI}
+                      disabled={isScanningOCR}
+                      className="min-h-[44px] px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-300 flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                      title="Tester immédiatement l'API avec un échantillon CNI marocain"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span className="truncate">Échantillon Test</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRawTextToAnalyze('');
+                        setIsRawTextModalOpen(true);
+                      }}
+                      disabled={isScanningOCR || isAIPostProcessing}
+                      className="min-h-[44px] px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 font-semibold text-xs border border-indigo-300 flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                      title="Coller ou tester directement du texte brut extrait par OCR pour que l'IA peuple les champs"
+                    >
+                      <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                      <span className="truncate">Analyser Texte Brut (IA)</span>
+                    </button>
                   </div>
 
                   {/* État de chargement / progression OCR + IA */}
@@ -815,7 +950,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                       <button
                         type="button"
                         onClick={() => setOcrError(null)}
-                        className="text-xs font-bold text-rose-700 hover:underline"
+                        className="text-xs font-bold text-rose-700 hover:underline cursor-pointer"
                       >
                         Fermer
                       </button>
@@ -845,6 +980,21 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                   </button>
                 </div>
               )}
+
+              {/* Barre d'outils secondaire : Préremplir profil démo rapide */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Informations administratives de l'opérateur
+                </span>
+                <button
+                  type="button"
+                  onClick={handleFillDemoCandidate}
+                  className="text-xs text-blue-700 hover:text-blue-900 font-bold hover:underline flex items-center gap-1.5 cursor-pointer py-1 px-2 rounded-md hover:bg-blue-50 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Préremplir profil démo</span>
+                </button>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -955,13 +1105,24 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                   </div>
                 </div>
 
-                <div className="w-44 bg-slate-200 rounded-full h-3 overflow-hidden">
-                  <div
-                    className={`h-3 rounded-full transition-all ${
-                      obligatoiresFournies >= totalObligatoires ? 'bg-emerald-600' : 'bg-amber-500'
-                    }`}
-                    style={{ width: `${completudePourcent}%` }}
-                  />
+                <div className="flex items-center gap-3">
+                  <div className="w-36 sm:w-44 bg-slate-200 rounded-full h-3 overflow-hidden">
+                    <div
+                      className={`h-3 rounded-full transition-all ${
+                        obligatoiresFournies >= totalObligatoires ? 'bg-emerald-600' : 'bg-amber-500'
+                      }`}
+                      style={{ width: `${completudePourcent}%` }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCompleteAllDocsDemo}
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                    title="Simule le dépôt de toutes les pièces requises pour tester la complétude à 100%"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Tout compléter (Démo)</span>
+                  </button>
                 </div>
               </div>
 
@@ -1031,6 +1192,14 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Information de souplesse RH */}
+              <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-950 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
+                <p>
+                  <strong>Note de conformité LEONI :</strong> Vous pouvez cliquer sur <strong>Continuer (2/3)</strong> même si des pièces administratives restent à compléter. Le dossier sera créé avec le suivi de complétude à {completudePourcent}%.
+                </p>
               </div>
             </div>
           )}
@@ -1122,13 +1291,13 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
           )}
         </div>
 
-        {/* Pied de modal avec cibles tactiles ≥ 48px */}
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+        {/* Pied de modal avec cibles tactiles ≥ 48px et navigation fonctionnelle */}
+        <div className="px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0">
           {step > 1 ? (
             <button
               type="button"
-              onClick={() => setStep((prev) => ((prev - 1) as any))}
-              className="min-h-[48px] px-5 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer"
+              onClick={handleGoBack}
+              className="min-h-[48px] px-4 sm:px-5 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer transition-colors"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Précédent</span>
@@ -1137,7 +1306,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="min-h-[48px] px-5 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs sm:text-sm cursor-pointer"
+              className="min-h-[48px] px-4 sm:px-5 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs sm:text-sm cursor-pointer transition-colors"
             >
               {t.cancel}
             </button>
@@ -1147,8 +1316,8 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
             {step < 3 ? (
               <button
                 type="button"
-                onClick={handleGoStep2}
-                className="min-h-[48px] px-6 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs sm:text-sm flex items-center gap-2 shadow-xs cursor-pointer"
+                onClick={handleGoNext}
+                className="min-h-[48px] px-5 sm:px-6 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs sm:text-sm flex items-center gap-2 shadow-xs cursor-pointer transition-colors"
               >
                 <span>Continuer ({step}/3)</span>
                 <ChevronRight className="w-4 h-4" />
@@ -1158,7 +1327,7 @@ export const TabletRecruitForm: React.FC<TabletRecruitFormProps> = ({
                 type="button"
                 disabled={loading || Boolean(matchingWarning?.doublonLocal)}
                 onClick={handleFinalSubmit}
-                className="min-h-[48px] px-7 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-xs cursor-pointer"
+                className="min-h-[48px] px-6 sm:px-7 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-xs cursor-pointer transition-colors"
               >
                 <CheckCircle2 className="w-5 h-5" />
                 <span>{loading ? 'Création en cours...' : 'Finaliser et intégrer la recrue'}</span>
